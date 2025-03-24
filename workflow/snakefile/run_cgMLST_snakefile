@@ -1,0 +1,104 @@
+import glob
+import json
+import os
+
+msg = 'Checkpoint 5: snakefile command recieved - Chewbaca analysis \n'
+sys.stderr.write(msg)
+
+current_directory = os.getcwd()
+# Load the JSON data
+with open('{}/config.json'.format(current_directory)) as f:
+    data = json.load(f)
+
+schema_path = os.path.join(data["schema_location"], data["params"]["input_schema_selection"])
+
+rule_all_list = [
+                "{}/clean_fastas_complete.txt".format(current_directory),
+                "{}/allele_call_complete.txt".format(current_directory),
+                "{}/allele_call_evaulator_complete.txt".format(current_directory),
+                "{}/extract_cg_mlst/presence_absence.tsv".format(data["output_data_dir"]),
+                ]
+
+rule all:
+    input:
+        rule_all_list
+
+rule prep_fastas_for_chewbbaca:
+    input:
+        raw_fasta_dir = data["raw_fasta_dir"],
+        config = '{}/config.json'.format(current_directory)
+    params:
+        clean_fasta_dir = "{}/clean_fastas".format(current_directory)
+    output:
+        touchpoint = "{}/clean_fastas_complete.txt".format(current_directory)
+    shell:
+        """
+        mkdir -p {params.clean_fasta_dir}
+
+        clean_fasta_filenames \
+            {input.raw_fasta_dir} \
+            {params.clean_fasta_dir} \
+            {input.config}
+
+        touch {output.touchpoint}
+        """
+
+rule run_allele_call:
+    input:
+        touchpoint = "{}/clean_fastas_complete.txt".format(current_directory)
+    params:
+        allele_call_out = "{}/allele_call/".format(data["output_data_dir"]),
+        clean_fasta_dir = "{}/clean_fastas".format(current_directory),
+        schema_dir = "/home/nbowers/bvbrc-dev/dev_container/dev/snp_exploration/chewBBACA_exploration/chewbbaca_schemas/Salmonella_enterica/"
+    output:
+        touchpoint = "{}/allele_call_complete.txt".format(current_directory)
+    shell:
+        """
+        chewBBACA.py AlleleCall \
+            --input-files {params.clean_fasta_dir} \
+            --schema-directory {params.schema_dir} \
+            --output-directory {params.allele_call_out} \
+            --cpu 4 \
+            --output-unclassified \
+            --output-missing \
+            --no-inferred
+        
+        touch {output.touchpoint}
+        """
+
+rule run_allele_call_evaluator:
+    input:
+        touchpoint = "{}/allele_call_complete.txt".format(current_directory),
+    params:
+        allele_call_in = directory("{}/allele_call/".format(data["output_data_dir"])),
+        allele_call_out = directory("{}/allele_call_evaulator/".format(data["output_data_dir"])),
+        schema_dir = schema_path,
+    output:
+        touchpoint = "{}/allele_call_evaulator_complete.txt".format(current_directory)
+        # Using touchpoint because chewbaca demands the directory not exist
+        # If I track the output file snakemake will generate the directory
+    shell:
+        """
+        chewBBACA.py AlleleCallEvaluator \
+            --input-files {params.allele_call_in} \
+            --schema-directory {params.schema_dir} \
+            --output-directory {params.allele_call_out} \
+            --cpu 4
+        
+        touch {output.touchpoint}
+        """
+
+rule extract_cgMLST:
+    input:
+        touchpoint = "{}/allele_call_complete.txt".format(current_directory),
+    params:
+        allele_call_result = "{}/allele_call/results_alleles.tsv".format(data["output_data_dir"]),
+        extract_cgmlst_out = directory("{}/extract_cg_mlst/".format(data["output_data_dir"]))
+    output:
+        "{}/extract_cg_mlst/presence_absence.tsv".format(data["output_data_dir"])
+    shell:
+        """
+        chewBBACA.py ExtractCgMLST \
+            --input-file {params.allele_call_result} \
+            --output-directory {params.extract_cgmlst_out}
+        """
