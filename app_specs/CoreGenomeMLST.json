@@ -1,8 +1,8 @@
 {
-    "id": "MetagenomicReadMapping",
-    "label": "Metagenomic read mapping",
-    "script": "App-MetagenomicReadMapping",
-    "description": "Map metagenomic reads to a defined gene set",
+    "id": "CoreGenomeMLST",
+    "label": "Core Genome MLST",
+    "script": "App-CoreGenomeMLST",
+    "description": "Evaulate core genomes from a set of genome groups of the same species.",
     "default_memory": "100G",
     "parameters": [
         {
