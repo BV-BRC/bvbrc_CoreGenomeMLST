@@ -15,8 +15,9 @@ schema_path = os.path.join(data["schema_location"], data["params"]["input_schema
 rule_all_list = [
                 "{}/clean_fastas_complete.txt".format(current_directory),
                 "{}/allele_call_complete.txt".format(current_directory),
+                # nb dev - removing report command due to plotly error 3/28
                 "{}/allele_call_evaulator_complete.txt".format(current_directory),
-                "{}/extract_cg_mlst/presence_absence.tsv".format(data["output_data_dir"]),
+                # "{}/extract_cg_mlst/presence_absence.tsv".format(data["output_data_dir"]),
                 ]
 
 rule all:
@@ -49,7 +50,7 @@ rule run_allele_call:
     params:
         allele_call_out = "{}/allele_call/".format(data["output_data_dir"]),
         clean_fasta_dir = "{}/clean_fastas".format(current_directory),
-        schema_dir = "/home/nbowers/bvbrc-dev/dev_container/dev/snp_exploration/chewBBACA_exploration/chewbbaca_schemas/Salmonella_enterica/"
+        schema_dir = schema_path
     output:
         touchpoint = "{}/allele_call_complete.txt".format(current_directory)
     shell:

@@ -188,7 +188,7 @@ sub run
     system($snakemake, "--version");
 
     $config_vars{cores} = $ENV{P3_ALLOCATED_CPU} // 2;
-    $config_vars{schema_location} = application_backend_dir . "CoreGenomeMLST";
+    $config_vars{schema_location} = application_backend_dir . "/CoreGenomeMLST/chewbbaca_schemas";
     $config_vars{snakemake} = $snakemake;
     $config_vars{workflow_dir} = $wf_dir;
     $config_vars{input_data_dir} = $staging_dir;
