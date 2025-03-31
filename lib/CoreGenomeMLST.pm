@@ -233,21 +233,12 @@ sub preflight
 {
     my($app, $app_def, $raw_params, $params) = @_;
 
-    my $readset = Bio::KBase::AppService::ReadSet->create_from_asssembly_params($params);
-
-    my($ok, $errs, $comp_size, $uncomp_size) = $readset->validate($app->workspace);
-
-    if (!$ok)
-    {
-	     die "Readset failed to validate. Errors:\n\t" . join("\n\t", @$errs);
-    }
-
     my $time = 60 * 60 * 12;
     my $pf = {
             	cpu => 1,
             	memory => "32G",
             	runtime => $time,
-            	storage => 1.1 * ($comp_size + $uncomp_size),
+                storage => 0,
               };
 
     return $pf;
