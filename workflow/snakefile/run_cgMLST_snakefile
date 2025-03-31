@@ -15,9 +15,9 @@ schema_path = os.path.join(data["schema_location"], data["params"]["input_schema
 rule_all_list = [
                 "{}/clean_fastas_complete.txt".format(current_directory),
                 "{}/allele_call_complete.txt".format(current_directory),
-                # nb dev - removing report command due to plotly error 3/28
                 "{}/allele_call_evaulator_complete.txt".format(current_directory),
-                # "{}/extract_cg_mlst/presence_absence.tsv".format(data["output_data_dir"]),
+                # nb dev - removing extract_cgMLST command due to plotly error 3/28
+                "{}/extract_cg_mlst/presence_absence.tsv".format(data["output_data_dir"]),
                 ]
 
 rule all:
