@@ -1,9 +1,3 @@
-#
-# Nicole Dev TO DO
-#
-# Manage the input schemas
-#
-
 use Carp::Always;
 use Bio::KBase::AppService::AppScript;
 use File::Slurp;
