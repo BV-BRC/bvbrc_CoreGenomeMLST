@@ -13,12 +13,16 @@ clean_fasta_dir = data["clean_data_dir"]
 work_data_dir = data["work_data_dir"]
 output_dir = data["output_data_dir"]
 schema_path = os.path.join(data["schema_location"], data["params"]["input_schema_selection"])
+print(schema_path)
 
 rule_all_list = [
                 "{}/clean_fastas_complete.txt".format(work_data_dir),
-                "{}/allele_call_complete.txt".format(work_data_dir),
-                "{}/allele_call_evaulator_complete.txt".format(work_data_dir),
+                "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
+                "{}/full_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir),
+                "{}/full_allele_call_evaulator_complete.txt".format(work_data_dir),
                 "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir),
+                "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir),
+                "{}/filtered_allele_call_evaulator_complete.txt".format(work_data_dir)
                 ]
 
 rule all:
@@ -39,15 +43,17 @@ rule prep_fastas_for_chewbbaca:
         """
 
 
-rule run_allele_call:
+rule run_full_schema_allele_call:
     input:
         touchpoint = "{}/clean_fastas_complete.txt".format(work_data_dir)
     params:
-        allele_call_out = "{}/allele_call/".format(output_dir),
+        allele_call_out = "{}/full_schema_allele_call/".format(output_dir),
         clean_fasta_dir_ = clean_fasta_dir,
-        schema_dir = schema_path
+        schema_dir = schema_path,
+        remove_empty_dir = directory("{}/full_schema_allele_call/dummy_dir".format(output_dir)),
+        work_dir = directory("{}/full_dd".format(work_data_dir))
     output:
-        touchpoint = "{}/allele_call_complete.txt".format(work_data_dir)
+        touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
     shell:
         """
         chewBBACA.py AlleleCall \
@@ -57,20 +63,37 @@ rule run_allele_call:
             --cpu 4 \
             --output-unclassified \
             --output-missing \
+            --output-novel \
             --no-inferred
         
+        mv {params.remove_empty_dir} {params.work_dir}
+
         touch {output.touchpoint}
+        """
+
+rule run_remove_genes_full:
+    input:
+        touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
+    params:
+        full_schema_allele_call__results = "{}/full_schema_allele_call/results_alleles.tsv".format(output_dir),
+        paralogous_loci = "{}/full_schema_allele_call/paralogous_loci.tsv".format(output_dir)
+    output:
+        no_paralogous_allele_call = "{}/full_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir)
+    shell:
+        """
+        chewBBACA.py RemoveGenes \
+            --input-file {params.full_schema_allele_call__results} -g {params.paralogous_loci} -o {output.no_paralogous_allele_call}
         """
 
 rule run_allele_call_evaluator:
     input:
-        touchpoint = "{}/allele_call_complete.txt".format(work_data_dir),
+        touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
     params:
-        allele_call_in = directory("{}/allele_call/".format(output_dir)),
-        allele_call_out = directory("{}/allele_call_evaulator/".format(output_dir)),
+        allele_call_in = directory("{}/full_schema_allele_call/".format(output_dir)),
+        allele_call_out = directory("{}/full_schema_allele_call/allele_call_evaulator".format(output_dir)),
         schema_dir = schema_path,
     output:
-        touchpoint = "{}/allele_call_evaulator_complete.txt".format(work_data_dir)
+        touchpoint = "{}/full_allele_call_evaulator_complete.txt".format(work_data_dir)
     shell:
         """
         chewBBACA.py AlleleCallEvaluator \
@@ -84,15 +107,89 @@ rule run_allele_call_evaluator:
 
 rule extract_cgMLST:
     input:
-        touchpoint = "{}/allele_call_evaulator_complete.txt".format(work_data_dir)
+        no_paralogous_allele_calls = "{}/full_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir)
     params:
-        allele_call_result = "{}/allele_call/results_alleles.tsv".format(output_dir),
-        extract_cgmlst_out = directory("{}/extract_cg_mlst/".format(output_dir))
+        extract_cgmlst_dir = directory("{}/extract_cg_mlst/".format(output_dir))
     output:
-        "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir)
+        extract_cgmlst_out = "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir)
     shell:
         """
+        mkdir -p {params.extract_cgmlst_dir}
+
         chewBBACA.py ExtractCgMLST \
-            --input-file {params.allele_call_result} \
-            --output-directory {params.extract_cgmlst_out}
+            --input-file {input.no_paralogous_allele_calls} \
+            --output-directory {params.extract_cgmlst_dir}
+        """
+
+rule run_remove_genes:
+    input:
+        touchpoint = "{}/filtered_schema_allele_call_complete.tx".format(work_data_dir),
+    params:
+        filtered_schema_allele_call_results = "{}/filtered_schema_allele_call/results_alleles.tsv".format(output_dir),
+        paralogous_loci = "{}/filtered_schema_allele_call/paralogous_loci.tsv".format(output_dir)
+    output:
+        no_paralogous_allele_call = "{}/filtered_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir)
+    shell:
+        """
+        chewBBACA.py RemoveGenes \
+            --input-file {params.filtered_schema_allele_call_results} -g {params.paralogous_loci} -o {output.no_paralogous_allele_call}
+        """
+
+rule run_filtered_schema_allele_call:
+    input:
+        touchpoint = "{}/clean_fastas_complete.txt".format(work_data_dir),
+        extract_cgmlst_out = "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir)
+    params:
+        allele_call_out = "{}/filtered_schema_allele_call/".format(output_dir),
+        clean_fasta_dir_ = clean_fasta_dir,
+        schema_dir = schema_path,
+        loci_list = "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
+        remove_empty_dir = "{}/filtered_schema_allele_call/dummy_dir".format(output_dir),
+        work_dir = directory("{}/filtered_dd".format(work_data_dir))
+    output:
+        touchpoint = "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir)
+    shell:
+        """
+        chewBBACA.py AlleleCall \
+            --input-files {params.clean_fasta_dir_} \
+            --schema-directory {params.schema_dir} \
+            --output-directory {params.allele_call_out} \
+            --output-novel \
+            --cpu 4 \
+            --gl {params.loci_list} \
+            --output-unclassified \
+            --output-missing \
+            --no-inferred
+        
+        mv {params.remove_empty_dir} {params.work_dir}
+        
+        touch {output.touchpoint}
+        """
+
+rule run_filtered_allele_call_evaluator:
+    input:
+        touchpoint = "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir),
+    params:
+        allele_call_in = directory("{}/filtered_schema_allele_call//".format(output_dir)),
+        allele_call_out = directory("{}/filtered_schema_allele_call/allele_call_evaulator".format(output_dir)),
+        allele_call_report = "{}/filtered_schema_allele_call/allele_call_evaulator/allelecall_report.html".format(output_dir),
+        allele_call_js = "{}/filtered_schema_allele_call/allele_call_evaulator/report_bundle.js".format(output_dir),
+        schema_dir = schema_path,
+    output:
+        touchpoint = "{}/filtered_allele_call_evaulator_complete.txt".format(work_data_dir),
+        allele_call_report = "{}/allelecall_report.html".format(output_dir),
+        allele_call_js = "{}/report_bundle.js".format(output_dir),
+    shell:
+        """
+        chewBBACA.py AlleleCallEvaluator \
+            --input-files {params.allele_call_in} \
+            --schema-directory {params.schema_dir} \
+            --output-directory {params.allele_call_out} \
+            --cpu 4
+        
+        cp {params.allele_call_report} {output.allele_call_report}
+
+        cp {params.allele_call_js} {output.allele_call_js}
+
+        touch {output.touchpoint}
         """
