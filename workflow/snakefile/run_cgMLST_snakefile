@@ -22,7 +22,9 @@ rule_all_list = [
                 "{}/full_allele_call_evaulator_complete.txt".format(work_data_dir),
                 "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir),
                 "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir),
-                "{}/filtered_allele_call_evaulator_complete.txt".format(work_data_dir)
+                "{}/filtered_allele_call_evaulator_complete.txt".format(work_data_dir),
+                "{}/filtered_allele_call_touchpoint.txt".format(work_data_dir),
+                "{}/full_allele_call_touchpoint.txt".format(work_data_dir)
                 ]
 
 rule all:
@@ -50,8 +52,6 @@ rule run_full_schema_allele_call:
         allele_call_out = "{}/full_schema_allele_call/".format(output_dir),
         clean_fasta_dir_ = clean_fasta_dir,
         schema_dir = schema_path,
-        remove_empty_dir = directory("{}/full_schema_allele_call/dummy_dir".format(output_dir)),
-        work_dir = directory("{}/full_dd".format(work_data_dir))
     output:
         touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
     shell:
@@ -66,8 +66,6 @@ rule run_full_schema_allele_call:
             --output-novel \
             --no-inferred
         
-        mv {params.remove_empty_dir} {params.work_dir}
-
         touch {output.touchpoint}
         """
 
@@ -144,8 +142,6 @@ rule run_filtered_schema_allele_call:
         clean_fasta_dir_ = clean_fasta_dir,
         schema_dir = schema_path,
         loci_list = "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
-        remove_empty_dir = "{}/filtered_schema_allele_call/dummy_dir".format(output_dir),
-        work_dir = directory("{}/filtered_dd".format(work_data_dir))
     output:
         touchpoint = "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir)
     shell:
@@ -160,9 +156,7 @@ rule run_filtered_schema_allele_call:
             --output-unclassified \
             --output-missing \
             --no-inferred
-        
-        mv {params.remove_empty_dir} {params.work_dir}
-        
+                
         touch {output.touchpoint}
         """
 
@@ -193,3 +187,38 @@ rule run_filtered_allele_call_evaluator:
 
         touch {output.touchpoint}
         """
+
+rule filtered_remove_empty_dir:
+    input:
+        filtered_touchpoint = "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir)
+    params:
+        empty_dir = "{}/filtered_schema_allele_call/dummy_dir".format(output_dir),
+        work_dir = directory("{}/filtered_dd".format(work_data_dir))
+    output:
+        filtered_move_empty_dir_touchpoint = "{}/filtered_allele_call_touchpoint.txt".format(work_data_dir),
+    shell:
+        """
+        mkdir -p {params.work_dir}
+        
+        [ -d "{params.empty_dir}" ] && mv {params.empty_dir} {params.work_dir}/
+
+        touch {output.filtered_move_empty_dir_touchpoint}
+        """
+
+rule full_remove_empty_dir:
+    input:
+        full_touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir)
+    params:
+        empty_dir = "{}/full_schema_allele_call/dummy_dir".format(output_dir),
+        work_dir = directory("{}/full_dd".format(work_data_dir))
+    output:
+        full_move_empty_dir_touchpoint = "{}/full_allele_call_touchpoint.txt".format(work_data_dir),
+    shell:
+        """
+        mkdir -p {params.work_dir}
+
+        [ -d "{params.empty_dir}" ] && mv {params.empty_dir} {params.work_dir}/
+
+        touch {output.full_move_empty_dir_touchpoint}
+        """
+
