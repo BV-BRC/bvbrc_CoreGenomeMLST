@@ -7,13 +7,22 @@ import re
 import shutil
 
 # Ensure files adhere to the rules defined in the the chewbbaca allele call function
-
 def chewbbaca_filename_format(filename):
     # Rule 1 Replace spaces and illegal characters with underscores
     name, ext = os.path.splitext(filename)
-    new_filename = re.sub(r'[^A-Za-z0-9_\-]', '_', name)
-    new_filename = "{}{}".format(new_filename, ext)
-    return new_filename
+    if ext != ".fasta":
+        # add_extension = os.path.join(filename, ".fasta")
+        add_extension = filename + ".fasta"
+        name, ext = os.path.splitext(add_extension)
+    
+    # Rule 1: Remove extra dots in the name (keep only one before the extension)
+    name = name.replace(".", "_")
+
+    # Rule 2: Replace spaces and illegal characters with underscores
+    name = re.sub(r'[^A-Za-z0-9_\-]', '_', name)
+
+    # Ensure we return a properly formatted filename
+    return "{}{}".format(name, ext)
 
 def copy_new_file(clean_fasta_dir, new_name, filename, original_path):
     # deal with moving the files 
