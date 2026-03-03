@@ -55,6 +55,7 @@ if unprocessed_genomes.stat().st_size == 0 and processed_genomes.stat() !=0:
     ]
     # genomes pulled from API ahead of snakefile are the only genomes
     final_allele_result = "{}/precomputed_allele_results.tsv".format(work_dir)
+    final_allele_result_clean = "{}/precomputed_allele_results_clean.tsv".format(work_dir)
     allele_call_complete_touchpoint = "{}/precomputed_allele_results.tsv".format(work_dir)
     # report directory on hold for now 
     allele_call_input_dir = ""
@@ -65,11 +66,13 @@ elif processed_genomes.stat().st_size == 0 and unprocessed_genomes.stat() !=0:
         "{}/new_genomes_allele_call_complete.txt".format(work_dir),
         "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
         "{}/allelecall_evaulation_complete.txt".format(work_dir),
-        "{}/allele_call_evaulator/allelecall_report.html".format(output_dir),
+        # "{}/allele_call_evaulator/allelecall_report.html".format(output_dir),
+        "{}/allelecall_evaulation_complete.txt".format(work_dir),
         "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
         "{}/{}_distance.phylip".format(output_dir, genome_group_name)
     ]
     final_allele_result = "{}/new_genomes_allele_call/results_alleles.tsv".format(work_dir)
+    final_allele_result_clean = "{}/new_genomes_allele_call/results_alleles_clean.tsv".format(work_dir)
     allele_call_input_dir = "{}/new_genomes_allele_call/".format(work_dir)
     allele_call_complete_touchpoint = "{}/new_genomes_allele_call_complete.txt".format(work_dir)
 else:
@@ -87,11 +90,9 @@ else:
     # only the genome groups
     allele_call_complete_touchpoint = "{}/genome_group_results.tsv".format(work_dir),
     final_allele_result = "{}/genome_group_results.tsv".format(work_dir)
+    final_allele_result_clean = "{}/genome_group_results_clean.tsv".format(work_dir)
     # report directory on hold for now - this is only the genome group
     allele_call_input_dir = ""
-
-    # make sure the other steps use this 
-    #genome_group_specific_existing_allele_results = "{}/genome_group_results.tsv".format(work_dir),
 
 rule all:
     input:
@@ -180,27 +181,23 @@ rule run_allele_call_evaluator:
     params:
         schema_dir = schema_path,
         allele_call_input_dir_ = allele_call_input_dir,
-        #allele_call_input_dir = directory("{}/joined_results_allele_call/".format(work_dir)),
-        allele_evaulator_work = directory("{}/allele_call_evaulator".format(work_dir)),
         allele_evaulator_out = directory("{}/allele_call_evaulator".format(output_dir)),
     output:
-        allele_call_report = "{}/allele_call_evaulator/allelecall_report.html".format(output_dir),
+        #allele_call_report = "{}/allele_call_evaulator/allelecall_report.html".format(output_dir),
         touchpoint = "{}/allelecall_evaulation_complete.txt".format(work_dir)
     shell:
         """
         chewBBACA.py AlleleCallEvaluator \
             --input-files {params.allele_call_input_dir_} \
             --schema-directory {params.schema_dir} \
-            --output-directory {params.allele_evaulator_work} \
+            --output-directory {params.allele_evaulator_out} \
             --cpu 4
 
-        cp {params.allele_evaulator_work} {params.allele_evaulator_out}
         touch {output.touchpoint}
         """
 
 rule run_local_clustering:
     input:
-        # new_genomes_allele_call_results = "{}/new_genomes_allele_call/results_alleles.tsv".format(work_dir),
         master_TSV = data["master_tsv"],
         reference_clusters = data["precomputed_clusters_path"],
         allele_call_complete_touchpoint = allele_call_complete_touchpoint
@@ -225,7 +222,7 @@ rule run_local_clustering:
             {params.final_allele_results} \
             -o {output.master_joined}
 
-        # run prep script for clustering
+        # run prep script for clustering with genome group + reference allele calls
         core-genome-mlst-utils clean-allelic-profile {output.master_joined}
 
         # cluster using precomputed clusters
@@ -252,6 +249,7 @@ rule run_grapetree_cli:
         metadata = "{}/genome_metadata.json".format(current_directory)
     params:
         all_call_input = final_allele_result,
+        all_call_input_clean = final_allele_result_clean,
         tmp_MSTreeV2 = "{}/{}_MSTreeV2.svg".format(output_dir, genome_group_name),
         work_dir = directory(work_dir)
     output:
@@ -267,43 +265,10 @@ rule run_grapetree_cli:
 
         p3x-tree-to-svg {output.MSTreeV2}
         
+        # Moving tree svg from output directory
         mv {params.tmp_MSTreeV2} {output.MSTreeV2_svg}
 
+        # reporting
         core-genome-mlst-utils write-html-report {params.all_call_input} \
             {input.metadata} {output.output_report} --svg-dir {params.work_dir}
         """
-
-# rule filtered_remove_empty_dir:
-#     input:
-#         filtered_touchpoint = "{}/_allele_call_evaulation_complete.txt".format(work_dir)
-#     params:
-#         empty_dir = "{}/filtered_schema_allele_call/dummy_dir".format(work_dir),
-#         work_dir = directory("{}/filtered_dd".format(work_dir))
-#     output:
-#         filtered_move_empty_dir_touchpoint = "{}/filtered_allele_call_touchpoint.txt".format(work_dir),
-#     shell:
-#         """
-#         mkdir -p {params.work_dir}
-        
-#         [ -d "{params.empty_dir}" ] && mv {params.empty_dir} {params.work_dir}/
-
-#         touch {output.filtered_move_empty_dir_touchpoint}
-#         """
-
-# rule full_remove_empty_dir:
-#     input:
-#         full_touchpoint = "{}/new_genomes_allele_call_complete.txt".format(work_dir)
-#     params:
-#         empty_dir = "{}/new_genomes_allele_call/dummy_dir".format(work_dir),
-#         work_dir = directory("{}/full_dd".format(work_dir))
-#     output:
-#         full_move_empty_dir_touchpoint = "{}/full_allele_call_touchpoint.txt".format(work_dir),
-#     shell:
-#         """
-#         mkdir -p {params.work_dir}
-
-#         [ -d "{params.empty_dir}" ] && mv {params.empty_dir} {params.work_dir}/
-
-#         touch {output.full_move_empty_dir_touchpoint}
-#         """
-

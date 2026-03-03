@@ -24,7 +24,7 @@ def chewbbaca_filename_format(filename):
         # add_extension = os.path.join(filename, ".fasta")
         add_extension = filename + ".fasta"
         name, ext = os.path.splitext(add_extension)
-    
+
     # Rule 1: Remove extra dots in the name (keep only one before the extension)
     name = name.replace(".", "_")
 
@@ -37,18 +37,18 @@ def chewbbaca_filename_format(filename):
 def clean_file(allelic_profile):
     mapping = {}
     input_path = Path(allelic_profile)
-    stem = input_path.stem  
+    stem = input_path.stem
     orig_col1_zero_file = input_path.with_name(stem + "_clean.tsv")
-    
+
     with open(allelic_profile, newline="", encoding="utf-8") as fin, \
          open(orig_col1_zero_file, "w", newline="", encoding="utf-8") as forig:
-        
+
         reader = csv.reader(fin, delimiter="\t")
         orig_writer = csv.writer(forig, delimiter="\t")
-    
+
         # ---- Header handling ----
         header = next(reader)  # first row (unaltered header)
-        
+
         # File A header: unchanged
         orig_writer.writerow(header)
 
@@ -58,7 +58,7 @@ def clean_file(allelic_profile):
             if not row:
                 continue  # skip completely empty lines
 
-            # Skip duplicate rows 
+            # Skip duplicate rows
             row_key = tuple(row)
             if row_key in seen_rows:
                 print("Skipping duplicate row: {}".format(row[0]))
@@ -85,7 +85,7 @@ def clean_file(allelic_profile):
             orig_writer.writerow(new_row_orig)
 
 def copy_new_file(clean_fasta_dir, new_name, filename, original_path):
-    # deal with moving the files 
+    # deal with moving the files
     clean_path = os.path.join(clean_fasta_dir, new_name)
     # If the filename was changed, copy the renamed file to the output directory
     if filename != new_name:
@@ -125,8 +125,8 @@ def clean_fasta_filenames(service_config):
 @cli.command()
 @click.argument("allelic_profile")
 def clean_allelic_profile(allelic_profile):
-    """Clean a ChewBBACA allelic profile TSV file: replace non-numeric values with 0, 
-    and reformat the genome ID column by replacing any '_' with '.'"""    
+    """Clean a ChewBBACA allelic profile TSV file: replace non-numeric values with 0,
+    and reformat the genome ID column by replacing any '_' with '.'"""
     clean_file(allelic_profile)
 
 def generate_table_html_2(kchooser_df, table_width='75%'):
@@ -182,10 +182,6 @@ MISSING_CODES = {"LNF", "ASM", "ALM", "NIPH", "NIPHEM", "PLOT3", "PLOT5"}
 
 def create_cgmlst_metadata_table(metadata_json, tsv_out):
     """Load genome metadata, keeping genome_id dots intact (not converted to underscores).
-
-    This is a cgMLST-specific replacement for the SNP report's create_metadata_table,
-    which converts '.' → '_' for kSNP4 compatibility.  Here we need genome_ids to match
-    the period-delimited IDs used in result_alleles.tsv (e.g. '1008297.7').
 
     Parameters
     ----------
@@ -260,66 +256,152 @@ def parse_result_alleles(result_alleles_tsv):
     return genome_ids, loci_ids, df, coverage_df
 
 
-def mask_allele_df(raw_df):
-    """Return a numeric DataFrame suitable for distance computation.
+# ---------------------------------------------------------------------------
+# Distance calculation — exact replication of chewBBACA's pipeline
+# ---------------------------------------------------------------------------
+# These functions replicate the logic from chewBBACA's:
+#   - CHEWBBACA/utils/iterables_manipulation.py  (replace_chars)
+#   - CHEWBBACA/ExtractCgMLST/determine_cgmlst.py (binarize_matrix, presAbs, compute_cgMLST)
+#   - CHEWBBACA/utils/distance_matrix.py          (compute_distances)
+#   - CHEWBBACA/AlleleCallEvaluator/evaluate_calls.py (pipeline orchestration)
+# ---------------------------------------------------------------------------
 
-    INF-* values are treated as valid novel alleles (kept as unique integers
-    would be, but for distance purposes the INF- prefix is stripped and the
-    numeric suffix used).  All other non-numeric codes → 0.
+def _chewbbaca_replace_chars(column, missing_char='0'):
+    """Mask a single column of allelic calls — exact replica of chewBBACA's
+    iterables_manipulation.replace_chars.
 
-    Parameters
-    ----------
-    raw_df : pd.DataFrame
-        Raw allele calls with string values.
+    Applied column-by-column via DataFrame.apply(), matching the way
+    chewBBACA invokes it: ``profiles_matrix.apply(im.replace_chars)``.
 
-    Returns
-    -------
-    masked : np.ndarray, shape (n_genomes, n_loci), dtype int32
-    genome_ids : list of str
+    Steps:
+      1. Strip 'INF-' prefix from inferred alleles  (INF-5  -> 5)
+      2. Strip '*'    prefix from Chewie-NS alleles  (*5     -> 5)
+      3. Replace all remaining non-numeric values    (LNF, ASM, ... -> 0)
     """
-    def _mask_val(v):
-        v = str(v).strip()
-        if v.startswith("INF-"):
-            suffix = v[4:]
-            return int(suffix) if suffix.isdigit() else 0
-        if v.isdigit():
-            return int(v)
-        return 0
-
-    masked = raw_df.apply(lambda col: col.apply(_mask_val)).values.astype("int32")
-    return masked, raw_df.index.tolist()
+    replaced_inf = column.replace(to_replace='INF-', value='', regex=True)
+    replaced_ns = replaced_inf.replace(to_replace=r'\*', value='', regex=True)
+    replaced_special = replaced_ns.replace(to_replace=r'\D+.*',
+                                           value=missing_char, regex=True)
+    return replaced_special
 
 
-def compute_distance_matrix(np_matrix):
-    """Compute symmetric pairwise allelic distance matrix.
+def _chewbbaca_binarize(column):
+    """Convert a column to presence (1) / absence (0) — exact replica of
+    chewBBACA's determine_cgmlst.binarize_matrix."""
+    return np.int64(pd.to_numeric(column) > 0)
 
-    Two loci contribute to the distance only when both samples have an exact
-    (non-zero) value AND those values differ.  Loci that are missing (0) in
-    either sample are ignored.
+
+def _chewbbaca_above_threshold(column, column_length, threshold):
+    """Test whether a locus is present at or above *threshold* — exact replica
+    of chewBBACA's determine_cgmlst.above_threshold."""
+    return (np.sum(column) / column_length) >= threshold
+
+
+def _compute_distance_matrix(np_matrix):
+    """Compute a symmetric pairwise allelic distance matrix — exact replica
+    of chewBBACA's distance_matrix.compute_distances.
+
+    For each pair of samples, the distance is the number of loci where both
+    have a non-zero (exact) allele AND those alleles differ.
 
     Parameters
     ----------
-    np_matrix : np.ndarray, shape (n, m), dtype int32
+    np_matrix : np.ndarray, shape (n_samples, n_loci), dtype int32
 
     Returns
     -------
-    dist_matrix : np.ndarray, shape (n, n), dtype int32
+    dist_matrix : np.ndarray, shape (n_samples, n_samples), dtype int32
     """
     n = np_matrix.shape[0]
-    dist_matrix = np.zeros((n, n), dtype="int32")
+    dist_matrix = np.zeros((n, n), dtype='int32')
 
     for i in range(n):
-        row = np_matrix[i:i + 1, :]
-        rest = np_matrix[i:, :]
-        shared = row * rest                    # non-zero only where both exact
-        diffs = np.count_nonzero(
-            shared * (row - rest), axis=-1
-        ).astype("int32")
-        dist_matrix[i, i:] = diffs
-        dist_matrix[i:, i] = diffs
+        current_row = np_matrix[i:i + 1, :]
+        permutation_rows = np_matrix[i:, :]
+        # non-zero only where both samples have an exact call
+        multiplied = current_row * permutation_rows
+        # count positions where both are exact AND alleles differ
+        pairwise_diffs = np.count_nonzero(
+            multiplied * (current_row - permutation_rows), axis=-1
+        ).astype('int32')
+        dist_matrix[i, i:] = pairwise_diffs
+        dist_matrix[i:, i] = pairwise_diffs
 
     return dist_matrix
 
+
+def chewbbaca_distance_pipeline(result_alleles_tsv):
+    """Full chewBBACA-compatible distance computation pipeline.
+
+    Replicates the exact sequence of operations from chewBBACA's
+    AlleleCallEvaluator/evaluate_calls.py:
+
+      1. Read allelic profiles (letting pandas infer dtypes, matching chewBBACA)
+      2. Mask with column-by-column apply of replace_chars
+      3. Compute presence-absence matrix (binarize_matrix)
+      4. Determine cgMLST at 100% threshold (loci present in ALL samples)
+      5. Compute symmetric distance matrix on cgMLST loci only
+
+    Parameters
+    ----------
+    result_alleles_tsv : str
+        Path to chewBBACA result_alleles.tsv.
+
+    Returns
+    -------
+    genome_ids : list of str
+        Sample identifiers (original, with underscores).
+    genome_ids_display : list of str
+        Sample identifiers (underscores replaced with periods, for display).
+    cgmlst_loci : list of str
+        Locus identifiers in the cgMLST-100%.
+    dist_matrix : np.ndarray, shape (n, n), dtype int32
+        Symmetric pairwise distance matrix.
+    """
+    # Step 1 — Read profiles matching chewBBACA
+    # chewBBACA: pd.read_csv(file, header=0, index_col=0, sep='\t', low_memory=False)
+    profiles = pd.read_csv(result_alleles_tsv, header=0, index_col=0,
+                           sep='\t', low_memory=False)
+    profiles.index = profiles.index.astype('string')
+    genome_ids = profiles.index.tolist()
+    genome_ids_display = [gid.replace('_', '.') for gid in genome_ids]
+
+    # Step 2 — Mask (column-by-column, matching chewBBACA)
+    # chewBBACA: masked_profiles = profiles_matrix.apply(im.replace_chars)
+    masked_profiles = profiles.apply(_chewbbaca_replace_chars)
+
+    # Step 3 — Presence-absence matrix
+    # chewBBACA: pa_matrix = masked_profiles.apply(binarize_matrix)
+    pa_matrix = masked_profiles.apply(_chewbbaca_binarize)
+
+    # Step 4 — cgMLST at 100% (loci present in every sample)
+    # chewBBACA: compute_cgMLST(pa_matrix, sample_ids, 1, len(sample_ids))
+    n_samples, _ = pa_matrix.shape
+    is_above = pa_matrix.apply(_chewbbaca_above_threshold,
+                               args=(n_samples, 1))
+    cgmlst_loci = pa_matrix.columns[is_above].tolist()
+
+    if len(cgmlst_loci) == 0:
+        raise ValueError(
+            "cgMLST is composed of 0 loci — cannot compute distance matrix. "
+            "Check sample quality or loci coverage.")
+
+    # Step 5 — Subset to cgMLST loci and convert to numpy
+    # chewBBACA: cgMLST_matrix = masked_profiles[cgMLST_genes]
+    #            then tsv_to_nparray reads it back with dtype=int32
+    cgmlst_matrix = masked_profiles[cgmlst_loci]
+    np_matrix = cgmlst_matrix.apply(pd.to_numeric).values.astype('int32')
+
+    # Step 6 — Compute distances
+    # chewBBACA: distance_matrix.compute_distances (same formula)
+    dist_matrix = _compute_distance_matrix(np_matrix)
+
+    return genome_ids, genome_ids_display, cgmlst_loci, dist_matrix
+
+
+# ---------------------------------------------------------------------------
+# Heatmap clustering
+# ---------------------------------------------------------------------------
 
 def cluster_heatmap_data(genome_ids, dist_matrix):
     """Cluster genome IDs by hierarchical (single-linkage) clustering.
@@ -349,7 +431,7 @@ def create_loci_coverage_plot(coverage_df):
     Parameters
     ----------
     coverage_df : pd.DataFrame
-        Index = genome_id; columns = Exact, INF, LNF, ASM, ALM, …
+        Index = genome_id; columns = Exact, INF, LNF, ASM, ALM, ...
 
     Returns
     -------
@@ -396,7 +478,7 @@ def create_loci_coverage_plot(coverage_df):
     return barplot_html
 
 
-def create_summary_table(genome_ids, loci_ids, coverage_df):
+def create_summary_table(genome_ids, loci_ids, coverage_df, n_cgmlst_loci):
     """Build a small summary DataFrame for the report header table.
 
     Parameters
@@ -404,6 +486,8 @@ def create_summary_table(genome_ids, loci_ids, coverage_df):
     genome_ids : list of str
     loci_ids : list of str
     coverage_df : pd.DataFrame
+    n_cgmlst_loci : int
+        Number of loci in the cgMLST-100%.
 
     Returns
     -------
@@ -416,6 +500,7 @@ def create_summary_table(genome_ids, loci_ids, coverage_df):
     summary = pd.DataFrame([{
         "Number of Genomes": len(genome_ids),
         "Number of Loci in Schema": len(loci_ids),
+        "cgMLST Loci (100%)": n_cgmlst_loci,
         "Total Loci Exact": total_exact,
         "Total Possible Calls": total_cells,
         "Percent Exact (%)": pct_exact,
@@ -455,6 +540,12 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
       genetic relationships. <strong>Click any cell</strong> to compare the
       metadata for that pair of genomes in the panel below.
     </p>
+    
+    <p>
+    Pairwise allelic distances are computed from the cgMLST loci — the subset
+    of loci successfully called in <em>every</em> genome.  A distance of zero
+    means the two genomes share identical alleles at every cgMLST locus.
+    </p>
 
     <div class="heatmap-controls">
       <h4>Filter and Sort the Data:</h4>
@@ -462,22 +553,6 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         <select id="metadataFieldSelect" onchange="recolorHeatmap()">
           <!-- options populated dynamically -->
         </select>
-      </label>
-    </div>
-
-    <div class="linkage-controls">
-      <h4>Recolor Heatmap According to Linkage Thresholds:</h4>
-      <label>Strong Linkage Thresholds:
-        <input type="number" id="t0" value="0" disabled style="width:40px;">
-        <input type="number" id="t1a" value="10" style="width:40px;">
-      </label>
-      <label>Mid Linkage Thresholds:
-        <input type="number" id="t1b" value="10" style="width:40px;">
-        <input type="number" id="t2a" value="40" style="width:40px;">
-      </label>
-      <label>Weak Linkage Thresholds:
-        <input type="number" id="t2b" value="40" style="width:40px;">
-        <input type="number" id="t3"  placeholder="Max" disabled style="width:40px;">
       </label>
     </div>
 
@@ -514,36 +589,9 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
       const distMatrix   = {dist_matrix_json};
       const metadata     = {metadata_json_string};
 
-      // Build a lookup once: genome_id → metadata object
+      // Build a lookup once: genome_id -> metadata object
       const idToMeta = {{}};
       metadata.forEach(obj => {{ idToMeta[obj.genome_id] = obj; }});
-
-      // ===== Sync paired threshold inputs =====
-      function syncThresholdInputs() {{
-        const t1a = document.getElementById('t1a');
-        const t1b = document.getElementById('t1b');
-        const t2a = document.getElementById('t2a');
-        const t2b = document.getElementById('t2b');
-
-        t1a.addEventListener('input', () => {{ t1b.value = t1a.value; recolorHeatmap(); }});
-        t1b.addEventListener('input', () => {{ t1a.value = t1b.value; recolorHeatmap(); }});
-        t2a.addEventListener('input', () => {{ t2b.value = t2a.value; recolorHeatmap(); }});
-        t2b.addEventListener('input', () => {{ t2a.value = t2b.value; recolorHeatmap(); }});
-
-        function validateOnBlur() {{
-          const t1 = parseFloat(t1a.value);
-          const t2 = parseFloat(t2a.value);
-          if (t1 > t2) {{
-            alert("Strong threshold must be less than or equal to Mid threshold. Resetting.");
-            t1a.value = t2;
-            t1b.value = t2;
-            recolorHeatmap();
-          }}
-        }}
-        t1a.addEventListener('blur', validateOnBlur);
-        t1b.addEventListener('blur', validateOnBlur);
-      }}
-      document.addEventListener('DOMContentLoaded', syncThresholdInputs);
 
       // ===== Populate metadata field dropdown =====
       (function populateMetadataFields() {{
@@ -562,25 +610,6 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
           select.appendChild(opt);
         }});
       }})();
-
-      // ===== Bin values for colour scale =====
-      function assignBin(val, t1, t2, maxVal) {{
-        if (val === 0)    return 0;
-        if (val < t1)     return 1;
-        if (val < t2)     return 2;
-        if (val < maxVal) return 3;
-        return 4;
-      }}
-
-      function getColorScale() {{
-        return [
-          [0.0,  '#440154'],
-          [0.25, '#3b528b'],
-          [0.5,  '#21918c'],
-          [0.75, '#5ec962'],
-          [1.0,  '#fde725']
-        ];
-      }}
 
       // ===== Reorder matrix by metadata field =====
       function reorderByField(fieldName, labelsArr, matrixArr) {{
@@ -625,7 +654,7 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         }}
       }}
 
-      // ===== Handle heatmap cell click → show comparison panel =====
+      // ===== Handle heatmap cell click -> show comparison panel =====
       function onHeatmapClick(eventData) {{
         if (!eventData || !eventData.points || eventData.points.length === 0) return;
         const pt   = eventData.points[0];
@@ -651,8 +680,6 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
 
       // ===== Draw / redraw heatmap =====
       function recolorHeatmap() {{
-        const t1        = parseInt(document.getElementById('t1a').value);
-        const t2        = parseInt(document.getElementById('t2a').value);
         const metaField = document.getElementById('metadataFieldSelect').value;
 
         let labels = genomeLabels.slice();
@@ -664,32 +691,25 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
           matrix = reordered.newMatrix;
         }}
 
-        const maxVal = Math.max(...matrix.flat());
-        const bins   = matrix.map(row => row.map(val => assignBin(val, t1, t2, maxVal)));
-
         const hoverText = matrix.map((row, i) =>
           row.map((val, j) => `${{labels[i]}} vs ${{labels[j]}}<br>Allelic Distance: ${{val}}<br><i>Click for full metadata</i>`)
         );
 
         const traceData = [{{
-          z:          bins,
+          z:          matrix,
           x:          labels,
           y:          labels,
           type:       'heatmap',
-          colorscale: getColorScale(),
-          zmin: 0,
-          zmax: 4,
+          colorscale: 'Viridis',
           text:       hoverText,
           hoverinfo:  'text',
           colorbar: {{
-            tickvals: [0, 1, 2, 3, 4],
-            ticktext: ['Zero', 'Strong', 'Mid', 'Weak', 'Max Value'],
-            title:    'Linkage Strength'
+            title: 'Allelic Distance'
           }}
         }}];
 
         const layout = {{
-          title: `Allelic Distance Heatmap (Thresholds: ${{t1}}, ${{t2}})` +
+          title: 'Allelic Distance Heatmap' +
                  (metaField ? ` – Reordered by "${{metaField}}"` : ''),
           xaxis: {{ type: 'category', tickangle: 45 }},
           yaxis: {{ type: 'category', tickangle: 45 }}
@@ -765,16 +785,14 @@ def define_html_template(summary_table_html, barplot_html,
       width: 90%;
       margin: 0 auto;
     }}
-    .heatmap-controls,
-    .linkage-controls {{
+    .heatmap-controls {{
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
       align-items: center;
       margin-bottom: 1em;
     }}
-    .heatmap-controls h4,
-    .linkage-controls h4 {{
+    .heatmap-controls h4 {{
       flex-basis: 100%;
       margin: 0;
     }}
@@ -817,42 +835,63 @@ def define_html_template(summary_table_html, barplot_html,
     This report summarizes the results of a Core Genome Multi-Locus Sequence
     Typing (cgMLST) analysis performed with
     <a href="https://chewbbaca.readthedocs.io" target="_blank">chewBBACA</a>.
-    cgMLST is a standardised, high-resolution approach to bacterial typing
+    cgMLST is a standardized, high-resolution approach to bacterial typing
     that compares allele assignments across hundreds to thousands of shared
     genes (loci), providing a reproducible and portable measure of genomic
     relatedness.
 
     Note, you can download the images of the plots in this
     report by clicking on the camera icon in the upper left-hand corner of
-    each plot.  Poor quality assemblies can impact performance.
+    each plot.
   </p>
 
   <h3>About the Analysis Workflow</h3>
   <p>
     The analysis begins with a set of bacterial genome assemblies and a
     curated cgMLST schema — a defined collection of loci representative of
-    the core genome of the species. chewBBACA's AlleleCall module identifies
-    and assigns allele numbers at each locus in each genome.
+    the core genome of the species or closely related species. chewBBACA's AlleleCall module identifies
+    and assigns allele numbers at each locus in each genome. Please note, poor quality assemblies can 
+    impact performance.
   </p>
   <p>
     Loci that could not be reliably exact receive one of the following
     classification codes:
   </p>
-  <ul style="list-style-type: disc; padding-left: 25px;">
-    <li><b>LNF</b> – Locus Not Found: no match detected in the genome.</li>
-    <li><b>ASM</b> – Allele Smaller than Minimum: matched region is too short.</li>
-    <li><b>ALM</b> – Allele Larger than Maximum: matched region is too long.</li>
-    <li><b>NIPH</b> – Non-Informative Paralogous Hit: multiple matches of equal quality.</li>
-    <li><b>NIPHEM</b> – Non-Informative Paralogous Hit with Exact Match: multiple exact matches.</li>
-    <li><b>PLOT3</b> / <b>PLOT5</b> – Possible LOcus on the Tip of a contig (3′ or 5′ end).</li>
-    <li><b>INF</b> – Inferred new allele: a valid but previously unobserved allele sequence.</li>
-  </ul>
-  <p>
-    Pairwise allelic distances are computed from the exact loci.  Only loci
-    successfully exact in <em>both</em> genomes being compared contribute to
-    the distance.  A distance of zero means the two genomes share identical
-    alleles at every mutually exact locus.
-  </p>
+<p>
+  <strong>LNF – Locus Not Found:</strong>
+  No match detected in the genome.
+</p>
+
+<p>
+  <strong>ASM – Allele Smaller than Minimum:</strong>
+  Matched region is too short.
+</p>
+
+<p>
+  <strong>ALM – Allele Larger than Maximum:</strong>
+  Matched region is too long.
+</p>
+
+<p>
+  <strong>NIPH – Non-Informative Paralogous Hit:</strong>
+  Multiple matches of equal quality.
+</p>
+
+<p>
+  <strong>NIPHEM – Non-Informative Paralogous Hit with Exact Match:</strong>
+  Multiple exact matches.
+</p>
+
+<p>
+  <strong>PLOT3 / PLOT5 – Possible Locus on Tip of Contig (3′ or 5′ end):</strong>
+  The locus may lie at the end of a contig.
+</p>
+
+<p>
+  <strong>INF – Inferred New Allele:</strong>
+  A valid but previously unobserved allele sequence.
+</p>
+
 
   <!-- ================================================================== -->
   <!-- INPUT DATA SUMMARY                                                   -->
@@ -989,19 +1028,17 @@ def define_html_template(summary_table_html, barplot_html,
   <h3>References</h3>
   <ol type="1">
     <li>
-      Oliveira PH, Touchon M, Cury J, Rocha EPC. (2017). The chromosomal
-      organisation of horizontal gene transfer in bacteria. <em>Nature
-      Communications</em>, 8, 841.
-      <a href="https://doi.org/10.1038/s41467-017-00808-w" target="_blank">
-        https://doi.org/10.1038/s41467-017-00808-w</a>
+    Introducing the Bacterial and Viral Bioinformatics Resource Center (BV-BRC): a resource combining PATRIC, IRD and ViPR.
+    Olson RD, Assaf R, Brettin T, Conrad N, Cucinell C, Davis JJ, Dempsey DM, Dickerman A, Dietrich EM, Kenyon RW, Kuscuoglu M, Lefkowitz EJ, Lu J, Machi D, Macken C, Mao C, Niewiadomska A, Nguyen M, Olsen GJ, Overbeek JC, Parrello B, Parrello V, Porter JS, Pusch GD, Shukla M, Singh I, Stewart L, Tan G, Thomas C, VanOeffelen M, Vonstein V, Wallace ZS, Warren AS, Wattam AR, Xia F, Yoo H, Zhang Y, Zmasek CM, Scheuermann RH, Stevens RL.
+    Nucleic Acids Res. 2022 Nov 9:gkac1003. doi: 10.1093/nar/gkac1003. Epub ahead of print.
+    PMID: <a href="https://pubmed.ncbi.nlm.nih.gov/36350631/" target="_blank">36350631</a>
+    DOI: <a href="https://doi.org/10.1093/nar/gkac1003" target="_blank">10.1093/nar/gkac1003</a><br>
     </li>
     <li>
       Silva M, Machado MP, Silva DN, Rossi M, Moran-Gilad J, Santos S,
-      Ramirez M, Carriço JA. (2018). chewBBACA: A complete suite for gene-by-gene
+      Ramirez M, Carrico JA. (2018). chewBBACA: A complete suite for gene-by-gene
       schema creation and strain identification. <em>Microbial Genomics</em>,
-      4(3).
-      <a href="https://doi.org/10.1099/mgen.0.000166" target="_blank">
-        https://doi.org/10.1099/mgen.0.000166</a>
+      4(3). DOI: <a href="https://doi.org/10.1099/mgen.0.000166" target="_blank">10.1099/mgen.0.000166</a>
     </li>
   </ol>
 
@@ -1033,20 +1070,35 @@ def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir):
       METADATA_JSON    Path to genome_metadata.json
       HTML_REPORT_PATH Path for the output HTML report
     """
+    # ---- Coverage stats (for bar chart and summary table) ----
     click.echo("Parsing result_alleles.tsv ...")
     genome_ids, loci_ids, raw_df, coverage_df = parse_result_alleles(result_alleles)
     n_genomes = len(genome_ids)
     n_loci = len(loci_ids)
     click.echo("  {} genomes x {} loci".format(n_genomes, n_loci))
 
-    click.echo("Masking allele calls ...")
-    masked_matrix, masked_ids = mask_allele_df(raw_df)
+    # ---- Distance calculation (chewBBACA-compatible pipeline) ----
+    click.echo("Running chewBBACA-compatible distance pipeline ...")
+    (dist_genome_ids,
+     dist_genome_ids_display,
+     cgmlst_loci,
+     dist_matrix) = chewbbaca_distance_pipeline(result_alleles)
+    n_cgmlst = len(cgmlst_loci)
+    click.echo("  cgMLST: {} / {} loci present in all {} samples".format(
+        n_cgmlst, n_loci, n_genomes))
 
-    click.echo("Computing pairwise allelic distances ...")
-    dist_matrix = compute_distance_matrix(masked_matrix)
+    # Use the display IDs (periods) for the report
+    ids = dist_genome_ids_display
+
+    click.echo("Writing distance matrix ...")
+    dist_matrix_path = os.path.splitext(html_report_path)[0] + "_distance_matrix.tsv"
+    dist_df = pd.DataFrame(dist_matrix, index=ids, columns=ids)
+    dist_df.index.name = "FILE"
+    dist_df.to_csv(dist_matrix_path, sep="\t")
+    click.echo("  Distance matrix written to {}".format(dist_matrix_path))
 
     click.echo("Clustering for heatmap ...")
-    clustered_labels, clustered_matrix = cluster_heatmap_data(masked_ids, dist_matrix)
+    clustered_labels, clustered_matrix = cluster_heatmap_data(ids, dist_matrix)
 
     click.echo("Building metadata table ...")
     metadata, metadata_df = create_cgmlst_metadata_table(metadata_json, "cgmlst_metadata.tsv")
@@ -1056,7 +1108,8 @@ def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir):
     barplot_html = create_loci_coverage_plot(coverage_df)
 
     click.echo("Building summary table ...")
-    summary_table_html = create_summary_table(genome_ids, loci_ids, coverage_df)
+    summary_table_html = create_summary_table(genome_ids, loci_ids, coverage_df,
+                                               n_cgmlst_loci=n_cgmlst)
 
     click.echo("Assembling heatmap ...")
     svg_candidates = sorted(glob.glob(os.path.join(svg_dir, '*.svg')))
