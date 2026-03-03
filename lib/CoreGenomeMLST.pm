@@ -127,19 +127,6 @@ sub run
         }
         close $lfh;
 
-        # replacing with api call nb 
-        # # Scan master table.tsv (only column 1, FILE)
-        # open my $tfh, "<", $master_table_fp or die "Cannot open $master_table_fp: $!";
-        # my $header = <$tfh>;  # skip header
-        # while (<$tfh>) {
-        #     chomp;
-        #     my ($id) = split /\t/, $_, 2;
-        #     if (exists $list_ids{$id}) {
-        #         $list_ids{$id} = 1;   
-        #     }
-        # }
-        # close $tfh;
-
         open my $tfh, "<", $master_table_fp or die "Cannot open $master_table_fp: $!";
         my $header = <$tfh>;
         close $tfh;
