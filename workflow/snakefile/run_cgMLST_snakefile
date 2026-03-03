@@ -6,25 +6,6 @@ from pathlib import Path
 msg = 'Checkpoint 5: snakefile command recieved - Chewbaca analysis \n'
 sys.stderr.write(msg)
 
-# proposed changes
-"""
-before the snakefile
-1. ahead of the snakefile, check if the genome exists inside the tsv file
-1.5 edit the perl script to ADD path to back end copy of the master TSV for that species to the config
-2. if not, bring the genome to the staging dir
-in the snakefile:
-3. run the inital allele call 
-4. pull the existing genome profiles and header (rows from the master table)
-5. join the two tables
-6. chewbacca remove genes
-7. chewbacca extract cgmlst 95%
-7.5 do we need to rerun the allele call for the INF values?
-8. chewbaca do the allele call evaulation
-"""
-
-
-
-
 current_directory = os.getcwd()
 # Load the JSON data
 with open('{}/config.json'.format(current_directory)) as f:
@@ -47,8 +28,6 @@ unprocessed_genomes = Path(unprocessed_genome_ids)
 if unprocessed_genomes.stat().st_size == 0 and processed_genomes.stat() !=0:
     print("All old genomes!")
     rule_all_list = [        
-        # report on hold for now 
-        # "{}/allelecall_evaulation_complete.txt".format(work_dir),
         "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
         "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
         "{}/{}_distance.phylip".format(output_dir, genome_group_name)
@@ -57,7 +36,6 @@ if unprocessed_genomes.stat().st_size == 0 and processed_genomes.stat() !=0:
     final_allele_result = "{}/precomputed_allele_results.tsv".format(work_dir)
     final_allele_result_clean = "{}/precomputed_allele_results_clean.tsv".format(work_dir)
     allele_call_complete_touchpoint = "{}/precomputed_allele_results.tsv".format(work_dir)
-    # report directory on hold for now 
     allele_call_input_dir = ""
 elif processed_genomes.stat().st_size == 0 and unprocessed_genomes.stat() !=0:
     print("All new genomes")
@@ -66,7 +44,6 @@ elif processed_genomes.stat().st_size == 0 and unprocessed_genomes.stat() !=0:
         "{}/new_genomes_allele_call_complete.txt".format(work_dir),
         "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
         "{}/allelecall_evaulation_complete.txt".format(work_dir),
-        # "{}/allele_call_evaulator/allelecall_report.html".format(output_dir),
         "{}/allelecall_evaulation_complete.txt".format(work_dir),
         "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
         "{}/{}_distance.phylip".format(output_dir, genome_group_name)
@@ -80,10 +57,7 @@ else:
     rule_all_list = [
         "{}/clean_fastas_complete.txt".format(work_dir),
         "{}/new_genomes_allele_call_complete.txt".format(work_dir),
-        # "{}/joined_allele/joined_allele_results.tsv".format(work_dir),
         "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
-        # report directory on hold for now 
-        # "{}/allelecall_evaulation_complete.txt".format(work_dir),
         "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
         "{}/{}_distance.phylip".format(output_dir, genome_group_name)
         ]
@@ -91,7 +65,6 @@ else:
     allele_call_complete_touchpoint = "{}/genome_group_results.tsv".format(work_dir),
     final_allele_result = "{}/genome_group_results.tsv".format(work_dir)
     final_allele_result_clean = "{}/genome_group_results_clean.tsv".format(work_dir)
-    # report directory on hold for now - this is only the genome group
     allele_call_input_dir = ""
 
 rule all:
