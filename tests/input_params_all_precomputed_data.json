@@ -1,0 +1,8 @@
+{
+	    "input_genome_group": "/olson@patricbrc.org/PATRIC-QA/applications/App-CoreGenomeMLST/input_genome_groups/processed_genomes",
+	        "input_schema_selection": "Salmonella_enterica",
+		    "output_path": "/olson@patricbrc.org/PATRIC-QA/applications/App-CoreGenomeMLST/tests",
+		        "output_file": "api_preprocessed_genomes_only_update",
+			    "input_genome_type": "genome_group",
+			        "analysis_type": "chewbbaca"
+}

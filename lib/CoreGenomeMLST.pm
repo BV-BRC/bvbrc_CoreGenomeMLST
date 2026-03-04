@@ -20,7 +20,6 @@ use YAML;
 use Template;
 use Module::Metadata;
 use warnings;
-use strict;
 
 use base 'Class::Accessor';
 
@@ -95,36 +94,125 @@ sub run
 
     # FUTURE DEV NOTE: If we support other input options
     # The fastas need to end up in the raw_fasta_dir - NB March 2025
+    my $schema_name = lc($params->{input_schema_selection});
+    my $processed_id_fp = "$work_dir/processed_genome_ids.txt";
+    my $precomputed_allele_calls = "$work_dir/precomputed_allele_results.tsv";
+    my $unprocessed_id_fp = "$work_dir/unprocessed_genome_ids.txt";
+    my @unprocessed_genome_ids;
+    my $master_table_fp = application_backend_dir . "/CoreGenomeMLST/precomputed_clusters/refs/" . $schema_name . "_11_25_2025_joined.tsv";
+    my $precomputed_clusters_dir = application_backend_dir . "/CoreGenomeMLST/precomputed_clusters/";
+    my $precomputed_clusters_path = $precomputed_clusters_dir . lc($params->{input_schema_selection}) . ".cgMLSTv1.npz";
+ 
     if ($params->{input_genome_type} eq 'genome_group')
     {
         my $genome_group_path = $params->{input_genome_group};
-        print($genome_group_path);
         my $group_name = basename($genome_group_path);
         my $api = P3DataAPI->new;
-        my @group_genome_ids = $api->retrieve_patric_ids_from_genome_group($genome_group_path);
-        $api ->retrieve_contigs_in_genomes(@group_genome_ids, $raw_fasta_dir, "%s");
-        # # my @genome_metadata_fields = (
-        # #   "genome_name", "genome_id", "ncbi_taxon_id", "organism_name", "taxon_lineage_ids", "taxon_lineage_names",
-        # #   "superkingdom", "kingdom", "phylum", "class", "order", "family", "genus", "species", "genome_status", "strain", 
-        # #   "serovar", "isolation_source", "isolation_comments", "collection_date", "collection_year", "season", 
-        # #   "isolation_country", "geographic_group", "geographic_country", "geographic_location", "host_name", "host_common_name",
-        # #   "host_gender", "host_age", "lab_host", "passage", "sequencing_center", "sequencing_status", "sequencing_platform", "chromosomes", 
-        # #   "plasmids", "contigs", "genome_length", "gc_content", "contig_l50", "contig_n50", "cds", "genome_quality", 
-        # #   "antimicrobial_resistance", "antimicrobial_resistance_evidence", "bioproject_accession", "biosample_accession", "assembly_accession",
-        # #   "sra_accession", "genbank_accession", "refseq_accession", "comments", "date_inserted", "date_modified", "public", "owner", "members", "",
-        # #   "accession", "patric_id", "public", "genome_status", "state");
+        my $group_genome_ids = $api->retrieve_patric_ids_from_genome_group($genome_group_path);
+        my $genome_id_file = "$work_dir/genome_id_list.txt";
+        open(my $fh, ">", $genome_id_file) or die "Could not open file: $!";
+        foreach my $item (@$group_genome_ids) {  
+            print $fh "$item\n";
+        }
+        close $fh;
+
+        # search the precomputed profiles for the ids listed in the genome group
+        open my $lfh, "<", $genome_id_file or die "Cannot open $genome_id_file: $!";
+        my %list_ids;
+        while (<$lfh>) {
+            chomp;
+            s/\r$//;      # remove CR if Windows line endings
+            next unless $_;
+            $list_ids{$_} = 0;   # initialize as "not seen yet"
+        }
+        close $lfh;
+
+        open my $tfh, "<", $master_table_fp or die "Cannot open $master_table_fp: $!";
+        my $header = <$tfh>;
+        close $tfh;
+
+        defined $header or die "Master table $master_table_fp appears empty (no header)\n";
+        chomp $header;
+        $header =~ s/\r$//;   # handle CRLF
+
+        open my $out, ">", $precomputed_allele_calls
+            or die "Cannot write $precomputed_allele_calls: $!";
+
+        print $out $header, "\n";
+
+        my %written;  # genome_id => 1, prevents duplicate TSV rows
+        $api = P3DataAPI->new();
+
+        # If you expect lots of genomes, chunk to avoid gigantic URL/query strings.
+        my $chunk_size = 500;
+
+        # Extract genome IDs you want to check
+        my @all_ids = sort keys %list_ids;
+
+        # Reset flags (optional, but makes intent explicit)
+        $list_ids{$_} = 0 for @all_ids;
+
+        for (my $i = 0; $i < @all_ids; $i += $chunk_size) {
+            my @chunk = @all_ids[$i .. ($i + $chunk_size - 1 < $#all_ids ? $i + $chunk_size - 1 : $#all_ids)];
+
+            my $id_string = '(' . join(",", @chunk) . ')';
+
+            my @rows = $api->query(
+                'genome_typing',
+                ['in', 'genome_id', $id_string],
+                ['select', 'genome_id,allele_profile']
+            );
+
+            # Mark processed if allele_profile is present and non-empty
+            for my $r (@rows) {
+                my $gid = $r->{genome_id};
+                next if !defined $gid;
+
+                my $ap = $r->{allele_profile};
+
+                next if !defined $ap || $ap eq '';
+
+                $list_ids{$gid} = 1;
+
+                # avoid duplicate writes if API returns multiple rows
+                next if $written{$gid}++;
+
+                my @calls = split /,/, $ap, -1;
+                print $out join("\t", $gid, @calls), "\n";
+            }
+  
+            }
+
+        open my $ppg, ">", $processed_id_fp or die "Cannot write $processed_id_fp: $!";
+        open my $upg, ">", $unprocessed_id_fp  or die "Cannot write $unprocessed_id_fp: $!";
+
+        for my $id (sort keys %list_ids) {
+            if ($list_ids{$id}) {
+                print $ppg "$id\n";
+            } else {
+                print $upg "$id\n";
+                push @unprocessed_genome_ids, $id;
+            }
+        }
+
+        close $ppg;
+        close $upg;
+
+
+        $api ->retrieve_contigs_in_genomes(\@unprocessed_genome_ids, $raw_fasta_dir, "%s");
         my @genome_metadata_fields = (
         "genome_id", "genome_name", "species", "strain", "genbank_accessions", "subtype", "lineage", "clade", "host_group", 
         "host_common_name", "host_scientific_name", "collection_year", "geographic_group", "isolation_country", "genome_status", 
         "state_province", "state");
-        my @genome_group_metadata = $api->retrieve_genome_metadata(@group_genome_ids, \@genome_metadata_fields);
+        # Get metadata for all genomes in the group
+        my @genome_group_metadata = $api->retrieve_genome_metadata($group_genome_ids, \@genome_metadata_fields);
         my $json_string = encode_json(@genome_group_metadata);
         print $json_string;
         # write metdata to json
         my $top = getcwd;
         write_file("$top/genome_metadata.json", JSON::XS->new->pretty->canonical->encode(\@genome_group_metadata));
     }
-
+    
     # Prep the config and get ready to run Snakemake
     print STDERR "Starting the config json....\n";
     my $json_string = encode_json($params);
@@ -173,6 +261,8 @@ sub run
 
     $config_vars{cores} = $ENV{P3_ALLOCATED_CPU} // 2;
     $config_vars{schema_location} = application_backend_dir . "/CoreGenomeMLST/chewbbaca_schemas";
+    $config_vars{precomputed_clusters_path} = $precomputed_clusters_path;
+    $config_vars{master_tsv} = $master_table_fp;
     $config_vars{snakemake} = $snakemake;
     $config_vars{workflow_dir} = $wf_dir;
     $config_vars{input_data_dir} = $staging_dir;
@@ -180,6 +270,8 @@ sub run
     $config_vars{work_data_dir} = $work_dir;
     $config_vars{clean_data_dir} = $clean_fasta_dir;
     $config_vars{raw_fasta_dir} = $raw_fasta_dir;
+    $config_vars{processed_genome_ids} = $processed_id_fp;
+    $config_vars{unprocessed_genome_ids} = $unprocessed_id_fp;
 
     # add the params to the config file
     $config_vars{params} = $params;
@@ -235,6 +327,7 @@ sub save_output_files
     my %suffix_map = (
             tre => 'nwk',
             tsv => 'tsv',
+            cgMLSTv1 => 'tsv',
             NJ => 'txt',
             ML => 'txt',
             vcf => 'vcf',

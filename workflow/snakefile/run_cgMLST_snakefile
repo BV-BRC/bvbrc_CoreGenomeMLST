@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+from pathlib import Path
 
 msg = 'Checkpoint 5: snakefile command recieved - Chewbaca analysis \n'
 sys.stderr.write(msg)
@@ -10,22 +11,61 @@ current_directory = os.getcwd()
 with open('{}/config.json'.format(current_directory)) as f:
     data = json.load(f)
 clean_fasta_dir = data["clean_data_dir"]
-work_data_dir = data["work_data_dir"]
+work_dir = data["work_data_dir"]
 output_dir = data["output_data_dir"]
 schema_path = os.path.join(data["schema_location"], data["params"]["input_schema_selection"])
-print(schema_path)
+master_TSV = data["master_tsv"]
+# check if you need all of these?
+processed_genome_ids = data["processed_genome_ids"]
+unprocessed_genome_ids = data["unprocessed_genome_ids"]
+genome_group_name = data["params"]["input_genome_group"].split("/")[-1]
 
-rule_all_list = [
-                "{}/clean_fastas_complete.txt".format(work_data_dir),
-                "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
-                "{}/full_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir),
-                "{}/full_allele_call_evaulator_complete.txt".format(work_data_dir),
-                "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir),
-                "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir),
-                "{}/filtered_allele_call_evaulator_complete.txt".format(work_data_dir),
-                "{}/filtered_allele_call_touchpoint.txt".format(work_data_dir),
-                "{}/full_allele_call_touchpoint.txt".format(work_data_dir)
-                ]
+processed_genomes = Path(processed_genome_ids)
+unprocessed_genomes = Path(unprocessed_genome_ids)
+
+
+# ADD REPORT OPTION FOR EVERY CASE
+if unprocessed_genomes.stat().st_size == 0 and processed_genomes.stat() !=0:
+    print("All old genomes!")
+    rule_all_list = [        
+        "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
+        "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
+        "{}/{}_distance.phylip".format(output_dir, genome_group_name)
+    ]
+    # genomes pulled from API ahead of snakefile are the only genomes
+    final_allele_result = "{}/precomputed_allele_results.tsv".format(work_dir)
+    final_allele_result_clean = "{}/precomputed_allele_results_clean.tsv".format(work_dir)
+    allele_call_complete_touchpoint = "{}/precomputed_allele_results.tsv".format(work_dir)
+    allele_call_input_dir = ""
+elif processed_genomes.stat().st_size == 0 and unprocessed_genomes.stat() !=0:
+    print("All new genomes")
+    rule_all_list = [
+        "{}/clean_fastas_complete.txt".format(work_dir),
+        "{}/new_genomes_allele_call_complete.txt".format(work_dir),
+        "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
+        "{}/allelecall_evaulation_complete.txt".format(work_dir),
+        "{}/allelecall_evaulation_complete.txt".format(work_dir),
+        "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
+        "{}/{}_distance.phylip".format(output_dir, genome_group_name)
+    ]
+    final_allele_result = "{}/new_genomes_allele_call/results_alleles.tsv".format(work_dir)
+    final_allele_result_clean = "{}/new_genomes_allele_call/results_alleles_clean.tsv".format(work_dir)
+    allele_call_input_dir = "{}/new_genomes_allele_call/".format(work_dir)
+    allele_call_complete_touchpoint = "{}/new_genomes_allele_call_complete.txt".format(work_dir)
+else:
+    print("Some genomes are processed and some are unprocessed. We need to join them.")
+    rule_all_list = [
+        "{}/clean_fastas_complete.txt".format(work_dir),
+        "{}/new_genomes_allele_call_complete.txt".format(work_dir),
+        "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
+        "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
+        "{}/{}_distance.phylip".format(output_dir, genome_group_name)
+        ]
+    # only the genome groups
+    allele_call_complete_touchpoint = "{}/genome_group_results.tsv".format(work_dir),
+    final_allele_result = "{}/genome_group_results.tsv".format(work_dir)
+    final_allele_result_clean = "{}/genome_group_results_clean.tsv".format(work_dir)
+    allele_call_input_dir = ""
 
 rule all:
     input:
@@ -35,7 +75,7 @@ rule prep_fastas_for_chewbbaca:
     input:
         config = '{}/config.json'.format(current_directory)
     output:
-        touchpoint = "{}/clean_fastas_complete.txt".format(work_data_dir)
+        touchpoint = "{}/clean_fastas_complete.txt".format(work_dir)
     shell:
         """
         core-genome-mlst-utils clean-fasta-filenames \
@@ -45,15 +85,16 @@ rule prep_fastas_for_chewbbaca:
         """
 
 
-rule run_full_schema_allele_call:
+rule run_new_genomes_allele_call:
     input:
-        touchpoint = "{}/clean_fastas_complete.txt".format(work_data_dir)
+        touchpoint = "{}/clean_fastas_complete.txt".format(work_dir)
     params:
-        allele_call_out = "{}/full_schema_allele_call/".format(output_dir),
+        allele_call_out = "{}/new_genomes_allele_call/".format(work_dir),
+        new_allele_calls = directory("{}/new_genomes_allele_call/result_alleles.tsv".format(work_dir)),
         clean_fasta_dir_ = clean_fasta_dir,
         schema_dir = schema_path,
     output:
-        touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
+        touchpoint = "{}/new_genomes_allele_call_complete.txt".format(work_dir),
     shell:
         """
         chewBBACA.py AlleleCall \
@@ -69,156 +110,138 @@ rule run_full_schema_allele_call:
         touch {output.touchpoint}
         """
 
-rule run_remove_genes_full:
+
+rule join_new_and_existing_allele_call_results:
     input:
-        touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
+        touchpoint = "{}/new_genomes_allele_call_complete.txt".format(work_dir),
+        pre_processed_from_api = "{}/precomputed_allele_results.tsv".format(work_dir),
+        processed_ids = processed_genome_ids,
+        unprocessed_ids = unprocessed_genome_ids
     params:
-        full_schema_allele_call__results = "{}/full_schema_allele_call/results_alleles.tsv".format(output_dir),
-        paralogous_loci = "{}/full_schema_allele_call/paralogous_loci.tsv".format(output_dir)
+       new_genomes_allele_call_results = "{}/new_genomes_allele_call/results_alleles.tsv".format(work_dir),
     output:
-        no_paralogous_allele_call = "{}/full_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir)
+        genome_group_specific_existing_allele_results = "{}/genome_group_results.tsv".format(work_dir),
     shell:
         """
-        chewBBACA.py RemoveGenes \
-            --input-file {params.full_schema_allele_call__results} -g {params.paralogous_loci} -o {output.no_paralogous_allele_call}
+        # 1 join all alleles in the genome group
+        chewBBACA.py JoinProfiles \
+            -p {params.new_genomes_allele_call_results} {input.pre_processed_from_api} \
+            -o {output.genome_group_specific_existing_allele_results}
         """
 
-rule run_allele_call_evaluator:
-    input:
-        touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir),
-    params:
-        allele_call_in = directory("{}/full_schema_allele_call/".format(output_dir)),
-        allele_call_out = directory("{}/full_schema_allele_call/allele_call_evaulator".format(output_dir)),
-        schema_dir = schema_path,
-    output:
-        touchpoint = "{}/full_allele_call_evaulator_complete.txt".format(work_data_dir)
-    shell:
-        """
-        chewBBACA.py AlleleCallEvaluator \
-            --input-files {params.allele_call_in} \
-            --schema-directory {params.schema_dir} \
-            --output-directory {params.allele_call_out} \
-            --cpu 4
-
-        touch {output.touchpoint}
-        """
 
 rule extract_cgMLST:
     input:
-        no_paralogous_allele_calls = "{}/full_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir)
+        allele_call_complete_touchpoint
     params:
-        extract_cgmlst_dir = directory("{}/extract_cg_mlst/".format(output_dir))
+        extract_cgmlst_dir = directory("{}/extract_cg_mlst/".format(output_dir)),
+        final_allele_results = final_allele_result
     output:
-        extract_cgmlst_out = "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir)
+        extract_cgmlst_out = "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir),
+        loci_list = "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir)
     shell:
         """
         mkdir -p {params.extract_cgmlst_dir}
 
         chewBBACA.py ExtractCgMLST \
-            --input-file {input.no_paralogous_allele_calls} \
+            --input-file {params.final_allele_results} \
             --output-directory {params.extract_cgmlst_dir}
         """
 
-rule run_remove_genes:
+rule run_allele_call_evaluator:
     input:
-        touchpoint = "{}/filtered_schema_allele_call_complete.tx".format(work_data_dir),
+        allele_call_complete_touchpoint
     params:
-        filtered_schema_allele_call_results = "{}/filtered_schema_allele_call/results_alleles.tsv".format(output_dir),
-        paralogous_loci = "{}/filtered_schema_allele_call/paralogous_loci.tsv".format(output_dir)
-    output:
-        no_paralogous_allele_call = "{}/filtered_schema_allele_call/results_alleles_NoParalogs.tsv".format(output_dir)
-    shell:
-        """
-        chewBBACA.py RemoveGenes \
-            --input-file {params.filtered_schema_allele_call_results} -g {params.paralogous_loci} -o {output.no_paralogous_allele_call}
-        """
-
-rule run_filtered_schema_allele_call:
-    input:
-        touchpoint = "{}/clean_fastas_complete.txt".format(work_data_dir),
-        extract_cgmlst_out = "{}/extract_cg_mlst/presence_absence.tsv".format(output_dir)
-    params:
-        allele_call_out = "{}/filtered_schema_allele_call/".format(output_dir),
-        clean_fasta_dir_ = clean_fasta_dir,
         schema_dir = schema_path,
-        loci_list = "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
+        allele_call_input_dir_ = allele_call_input_dir,
+        allele_evaulator_out = directory("{}/allele_call_evaulator".format(output_dir)),
     output:
-        touchpoint = "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir)
-    shell:
-        """
-        chewBBACA.py AlleleCall \
-            --input-files {params.clean_fasta_dir_} \
-            --schema-directory {params.schema_dir} \
-            --output-directory {params.allele_call_out} \
-            --output-novel \
-            --cpu 4 \
-            --gl {params.loci_list} \
-            --output-unclassified \
-            --output-missing \
-            --no-inferred
-                
-        touch {output.touchpoint}
-        """
-
-rule run_filtered_allele_call_evaluator:
-    input:
-        touchpoint = "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir),
-    params:
-        allele_call_in = directory("{}/filtered_schema_allele_call//".format(output_dir)),
-        allele_call_out = directory("{}/filtered_schema_allele_call/allele_call_evaulator".format(output_dir)),
-        allele_call_report = "{}/filtered_schema_allele_call/allele_call_evaulator/allelecall_report.html".format(output_dir),
-        allele_call_js = "{}/filtered_schema_allele_call/allele_call_evaulator/report_bundle.js".format(output_dir),
-        schema_dir = schema_path,
-    output:
-        touchpoint = "{}/filtered_allele_call_evaulator_complete.txt".format(work_data_dir),
-        allele_call_report = "{}/allelecall_report.html".format(output_dir),
-        allele_call_js = "{}/report_bundle.js".format(output_dir),
+        #allele_call_report = "{}/allele_call_evaulator/allelecall_report.html".format(output_dir),
+        touchpoint = "{}/allelecall_evaulation_complete.txt".format(work_dir)
     shell:
         """
         chewBBACA.py AlleleCallEvaluator \
-            --input-files {params.allele_call_in} \
+            --input-files {params.allele_call_input_dir_} \
             --schema-directory {params.schema_dir} \
-            --output-directory {params.allele_call_out} \
+            --output-directory {params.allele_evaulator_out} \
             --cpu 4
-        
-        cp {params.allele_call_report} {output.allele_call_report}
-
-        cp {params.allele_call_js} {output.allele_call_js}
 
         touch {output.touchpoint}
         """
 
-rule filtered_remove_empty_dir:
+rule run_local_clustering:
     input:
-        filtered_touchpoint = "{}/filtered_schema_allele_call_complete.txt".format(work_data_dir)
+        master_TSV = data["master_tsv"],
+        reference_clusters = data["precomputed_clusters_path"],
+        allele_call_complete_touchpoint = allele_call_complete_touchpoint
     params:
-        empty_dir = "{}/filtered_schema_allele_call/dummy_dir".format(output_dir),
-        work_dir = directory("{}/filtered_dd".format(work_data_dir))
+        clean_master_joined = "{}/master_joined_allele_results_clean.tsv".format(work_dir),
+        tmp_out_name = "{}/{}_cluster_result_cgMLSTv1".format(work_dir, genome_group_name),
+        zipped_cluster_result = "{}/{}_cluster_result_cgMLSTv1.HierCC.gz".format(work_dir, genome_group_name),
+        unzipped_cluster_result = "{}/{}_cluster_result_cgMLSTv1.HierCC".format(work_dir, genome_group_name),
+        tmp_npz = "{}/{}_cluster_result_cgMLSTv1.npz".format(work_dir, genome_group_name),
+        final_allele_results = final_allele_result,
     output:
-        filtered_move_empty_dir_touchpoint = "{}/filtered_allele_call_touchpoint.txt".format(work_data_dir),
+        master_joined = "{}/master_joined_allele_results.tsv".format(work_dir),
+        cluster_result = "{}/{}_cluster_result_cgMLSTv1.HierCC".format(output_dir, genome_group_name),
+        npz = "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
+        final_out = "{}/result_alleles.tsv".format(output_dir)
+
     shell:
         """
-        mkdir -p {params.work_dir}
+        # merge the new allele call results with the existing allele call results        
+        chewBBACA.py JoinProfiles \
+            -p {input.master_TSV} \
+            {params.final_allele_results} \
+            -o {output.master_joined}
+
+        # run prep script for clustering with genome group + reference allele calls
+        core-genome-mlst-utils clean-allelic-profile {output.master_joined}
+
+        # cluster using precomputed clusters
+        pHierCC \
+            --profile {params.clean_master_joined} \
+            --output {params.tmp_out_name} \
+            --append {input.reference_clusters}
         
-        [ -d "{params.empty_dir}" ] && mv {params.empty_dir} {params.work_dir}/
+        gunzip {params.zipped_cluster_result}
 
-        touch {output.filtered_move_empty_dir_touchpoint}
+        # copy unzipped cluster to output 
+        cp {params.unzipped_cluster_result} {output.cluster_result}
+
+        # copy npz from work to output
+        cp {params.tmp_npz} {output.npz}
+        
+        # copy final allele call result to output
+        cp {params.final_allele_results} {output.final_out}
         """
-
-rule full_remove_empty_dir:
+    
+rule run_grapetree_cli:
     input:
-        full_touchpoint = "{}/full_schema_allele_call_complete.txt".format(work_data_dir)
+        allele_call_complete_touchpoint = allele_call_complete_touchpoint,
+        metadata = "{}/genome_metadata.json".format(current_directory)
     params:
-        empty_dir = "{}/full_schema_allele_call/dummy_dir".format(output_dir),
-        work_dir = directory("{}/full_dd".format(work_data_dir))
+        all_call_input = final_allele_result,
+        all_call_input_clean = final_allele_result_clean,
+        tmp_MSTreeV2 = "{}/{}_MSTreeV2.svg".format(output_dir, genome_group_name),
+        work_dir = directory(work_dir)
     output:
-        full_move_empty_dir_touchpoint = "{}/full_allele_call_touchpoint.txt".format(work_data_dir),
+        MSTreeV2 = "{}/{}_MSTreeV2.nwk".format(output_dir, genome_group_name),
+        MSTreeV2_svg = "{}/cgmlst_tree.svg".format(work_dir, genome_group_name),
+        distance = "{}/{}_distance.phylip".format(output_dir, genome_group_name),
+        output_report = "{}/cgMLST_Report.html".format(output_dir)
     shell:
         """
-        mkdir -p {params.work_dir}
+        grapetree -p {params.all_call_input} -m distance > {output.distance}
 
-        [ -d "{params.empty_dir}" ] && mv {params.empty_dir} {params.work_dir}/
+        grapetree -p {params.all_call_input} -m MSTreeV2 > {output.MSTreeV2}
 
-        touch {output.full_move_empty_dir_touchpoint}
+        p3x-tree-to-svg {output.MSTreeV2}
+        
+        # Moving tree svg from output directory
+        mv {params.tmp_MSTreeV2} {output.MSTreeV2_svg}
+
+        # reporting
+        core-genome-mlst-utils write-html-report {params.all_call_input} \
+            {input.metadata} {output.output_report} --svg-dir {params.work_dir}
         """
-
