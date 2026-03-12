@@ -223,11 +223,12 @@ rule run_grapetree_cli:
     params:
         all_call_input = final_allele_result,
         all_call_input_clean = final_allele_result_clean,
-        tmp_MSTreeV2 = "{}/{}_MSTreeV2.svg".format(output_dir, genome_group_name),
+        tmp_MSTreeV2 = "{}/{}_MSTreeV2.tre.svg".format(output_dir, genome_group_name),
         work_dir = directory(work_dir)
     output:
-        MSTreeV2 = "{}/{}_MSTreeV2.nwk".format(output_dir, genome_group_name),
-        MSTreeV2_svg = "{}/cgmlst_tree.svg".format(work_dir, genome_group_name),
+        MSTreeV2 = "{}/{}_MSTreeV2.tre".format(output_dir, genome_group_name),
+        MSTreeV2_svg = "{}/{}_MSTreeV2.tre.svg".format(work_dir, genome_group_name),
+        phyloxml = "{}/{}_MSTreeV2.tre.phyloxml".format(output_dir, genome_group_name),
         distance = "{}/{}_distance.phylip".format(output_dir, genome_group_name),
         output_report = "{}/cgMLST_Report.html".format(output_dir)
     shell:
@@ -237,10 +238,13 @@ rule run_grapetree_cli:
         grapetree -p {params.all_call_input} -m MSTreeV2 > {output.MSTreeV2}
 
         p3x-tree-to-svg {output.MSTreeV2}
-        
+
         # Moving tree svg from output directory
         mv {params.tmp_MSTreeV2} {output.MSTreeV2_svg}
-
+        
+        # converting to phyloxml tree
+        p3x-newick-to-phyloxml --verbose -l genome_id -g "collection_year,host_common_name,isolation_country,strain,genome_name,genome_id,accession,subtype,lineage,host_group,collection_date,geographic_group,geographic_location" {output.MSTreeV2}
+        
         # reporting
         core-genome-mlst-utils write-html-report {params.all_call_input} \
             {input.metadata} {output.output_report} --svg-dir {params.work_dir}

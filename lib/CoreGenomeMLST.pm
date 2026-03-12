@@ -326,6 +326,7 @@ sub save_output_files
 
     my %suffix_map = (
             tre => 'nwk',
+            phyloxml => 'phyloxml',
             tsv => 'tsv',
             cgMLSTv1 => 'tsv',
             NJ => 'txt',
