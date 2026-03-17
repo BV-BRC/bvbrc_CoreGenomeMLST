@@ -127,76 +127,89 @@ sub run
         }
         close $lfh;
 
-        open my $tfh, "<", $master_table_fp or die "Cannot open $master_table_fp: $!";
-        my $header = <$tfh>;
-        close $tfh;
+        if (! -e $master_table_fp) {
+            warn "No precomputed schemas found at $master_table_fp — all genome IDs will be processed from scratch.\n";
 
-        defined $header or die "Master table $master_table_fp appears empty (no header)\n";
-        chomp $header;
-        $header =~ s/\r$//;   # handle CRLF
+            open my $ppg, ">", $processed_id_fp  or die "Cannot write $processed_id_fp: $!";
+            close $ppg;
 
-        open my $out, ">", $precomputed_allele_calls
-            or die "Cannot write $precomputed_allele_calls: $!";
-
-        print $out $header, "\n";
-
-        my %written;  # genome_id => 1, prevents duplicate TSV rows
-        $api = P3DataAPI->new();
-
-        # If you expect lots of genomes, chunk to avoid gigantic URL/query strings.
-        my $chunk_size = 500;
-
-        # Extract genome IDs you want to check
-        my @all_ids = sort keys %list_ids;
-
-        # Reset flags (optional, but makes intent explicit)
-        $list_ids{$_} = 0 for @all_ids;
-
-        for (my $i = 0; $i < @all_ids; $i += $chunk_size) {
-            my @chunk = @all_ids[$i .. ($i + $chunk_size - 1 < $#all_ids ? $i + $chunk_size - 1 : $#all_ids)];
-
-            my $id_string = '(' . join(",", @chunk) . ')';
-
-            my @rows = $api->query(
-                'genome_typing',
-                ['in', 'genome_id', $id_string],
-                ['select', 'genome_id,allele_profile']
-            );
-
-            # Mark processed if allele_profile is present and non-empty
-            for my $r (@rows) {
-                my $gid = $r->{genome_id};
-                next if !defined $gid;
-
-                my $ap = $r->{allele_profile};
-
-                next if !defined $ap || $ap eq '';
-
-                $list_ids{$gid} = 1;
-
-                # avoid duplicate writes if API returns multiple rows
-                next if $written{$gid}++;
-
-                my @calls = split /,/, $ap, -1;
-                print $out join("\t", $gid, @calls), "\n";
-            }
-  
-            }
-
-        open my $ppg, ">", $processed_id_fp or die "Cannot write $processed_id_fp: $!";
-        open my $upg, ">", $unprocessed_id_fp  or die "Cannot write $unprocessed_id_fp: $!";
-
-        for my $id (sort keys %list_ids) {
-            if ($list_ids{$id}) {
-                print $ppg "$id\n";
-            } else {
+            open my $upg, ">", $unprocessed_id_fp or die "Cannot write $unprocessed_id_fp: $!";
+            for my $id (sort keys %list_ids) {
                 print $upg "$id\n";
                 push @unprocessed_genome_ids, $id;
             }
-        }
+            close $upg;
+        } else {
+            open my $tfh, "<", $master_table_fp or die "Cannot open $master_table_fp: $!";
+            my $header = <$tfh>;
+            close $tfh;
 
-        close $ppg;
-        close $upg;
+            defined $header or die "Master table $master_table_fp appears empty (no header)\n";
+            chomp $header;
+            $header =~ s/\r$//;   # handle CRLF
+
+            open my $out, ">", $precomputed_allele_calls
+                or die "Cannot write $precomputed_allele_calls: $!";
+
+            print $out $header, "\n";
+
+            my %written;  # genome_id => 1, prevents duplicate TSV rows
+            $api = P3DataAPI->new();
+
+            # If you expect lots of genomes, chunk to avoid gigantic URL/query strings.
+            my $chunk_size = 500;
+
+            # Extract genome IDs you want to check
+            my @all_ids = sort keys %list_ids;
+
+            # Reset flags (optional, but makes intent explicit)
+            $list_ids{$_} = 0 for @all_ids;
+
+            for (my $i = 0; $i < @all_ids; $i += $chunk_size) {
+                my @chunk = @all_ids[$i .. ($i + $chunk_size - 1 < $#all_ids ? $i + $chunk_size - 1 : $#all_ids)];
+
+                my $id_string = '(' . join(",", @chunk) . ')';
+
+                my @rows = $api->query(
+                    'genome_typing',
+                    ['in', 'genome_id', $id_string],
+                    ['select', 'genome_id,allele_profile']
+                );
+
+                # Mark processed if allele_profile is present and non-empty
+                for my $r (@rows) {
+                    my $gid = $r->{genome_id};
+                    next if !defined $gid;
+
+                    my $ap = $r->{allele_profile};
+
+                    next if !defined $ap || $ap eq '';
+
+                    $list_ids{$gid} = 1;
+
+                    # avoid duplicate writes if API returns multiple rows
+                    next if $written{$gid}++;
+
+                    my @calls = split /,/, $ap, -1;
+                    print $out join("\t", $gid, @calls), "\n";
+                }
+            }
+
+            open my $ppg, ">", $processed_id_fp  or die "Cannot write $processed_id_fp: $!";
+            open my $upg, ">", $unprocessed_id_fp or die "Cannot write $unprocessed_id_fp: $!";
+
+            for my $id (sort keys %list_ids) {
+                if ($list_ids{$id}) {
+                    print $ppg "$id\n";
+                } else {
+                    print $upg "$id\n";
+                    push @unprocessed_genome_ids, $id;
+                }
+            }
+
+            close $ppg;
+            close $upg;
+        }
 
 
         $api ->retrieve_contigs_in_genomes(\@unprocessed_genome_ids, $raw_fasta_dir, "%s");
