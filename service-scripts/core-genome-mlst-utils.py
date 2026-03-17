@@ -229,9 +229,13 @@ def parse_result_alleles(result_alleles_tsv):
     coverage_df : pd.DataFrame
         Per-sample counts of: exact, INF, and each missing code.
     """
-    df = pd.read_csv(result_alleles_tsv, sep="\t", index_col=0, dtype=str)
-
-    df.index = df.index.astype(str).str.replace("_", ".", regex=False)
+    # pandas 2.x ignores dtype for the index column when index_col is used,
+    # causing numeric-looking IDs like "211759.20" to lose trailing zeros.
+    # Read all columns as str first, then set the index manually.
+    df = pd.read_csv(result_alleles_tsv, sep="\t", dtype=str)
+    _id_col = df.columns[0]
+    df[_id_col] = df[_id_col].str.replace("_", ".", regex=False)
+    df = df.set_index(_id_col)
 
     genome_ids = df.index.tolist()
     loci_ids = df.columns.tolist()
@@ -360,9 +364,13 @@ def chewbbaca_distance_pipeline(result_alleles_tsv):
     """
     # Step 1 — Read profiles matching chewBBACA
     # chewBBACA: pd.read_csv(file, header=0, index_col=0, sep='\t', low_memory=False)
-    profiles = pd.read_csv(result_alleles_tsv, header=0, index_col=0,
-                           sep='\t', low_memory=False)
-    profiles.index = profiles.index.astype('string')
+    # pandas 2.x ignores dtype for the index column when index_col is used,
+    # causing numeric-looking IDs like "211759.20" to lose trailing zeros.
+    # Read all columns as str first, then set the index manually.
+    profiles = pd.read_csv(result_alleles_tsv, header=0,
+                           sep='\t', low_memory=False, dtype=str)
+    _id_col = profiles.columns[0]
+    profiles = profiles.set_index(_id_col)
     genome_ids = profiles.index.tolist()
     genome_ids_display = [gid.replace('_', '.') for gid in genome_ids]
 
@@ -708,9 +716,15 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
           }}
         }}];
 
+        // Scale height to number of samples: 40px/sample, min 500, max 1800.
+        // Beyond ~45 samples the labels compress but the plot stays readable.
+        const n = labels.length;
+        const heatmapHeight = Math.max(500, Math.min(1800, n * 40 + 150));
+
         const layout = {{
           title: 'Allelic Distance Heatmap' +
                  (metaField ? ` – Reordered by "${{metaField}}"` : ''),
+          height: heatmapHeight,
           xaxis: {{ type: 'category', tickangle: 45 }},
           yaxis: {{ type: 'category', tickangle: 45 }}
         }};
@@ -994,7 +1008,11 @@ def define_html_template(summary_table_html, barplot_html,
         const tr = document.createElement('tr');
         headers.forEach(header => {{
           const td = document.createElement('td');
-          td.innerHTML = row[header];
+          if (header === 'genome_id') {{
+            td.innerHTML = `<a href="https://www.bv-brc.org/view/Genome/${{row[header]}}" target="_blank">${{row[header]}}</a>`;
+          }} else {{
+            td.innerHTML = row[header];
+          }}
           tr.appendChild(td);
         }});
         tableBody.appendChild(tr);
