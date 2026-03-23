@@ -62,56 +62,56 @@ my $in_file = File::Temp->new();
 $gto_in->write_contigs_to_file($in_file);
 
 my %taxon_to_schema = (
-    470 => "acinetobacter_baumannii",
-    1392 => "bacillus_anthracis",
-    520 => "bordetella_pertussis",
-    235 => "brucella_spp",
-    36855 => "brucella_spp",
-    120577 => "brucella_spp",
-    1218315 => "brucella_spp",
-    29459 => "brucella_melitensis",
-    444163 => "brucella_spp",
-    29460 => "brucella_spp",
-    236 => "brucella_spp",
-    120576 => "brucella_spp",
-    29461 => "brucella_spp",
-    13373 => "burkholderia_mallei_fli",
-    111527 => "burkholderia_pseudomallei",
-    197 => "campylobacter_jejuni_coli",
-    195 => "campylobacter_jejuni_coli",
-    1496 => "clostridioides_difficile",
-    1502 => "clostridium_perfringens",
-    1717 => "corynebacterium_diphtheriae",
-    1719 => "corynebacterium_pseudotuberculosis",
-    413503 => "cronobacter_sakazakii_malonaticus",
-    28141 => "cronobacter_sakazakii_malonaticus",
-    1351 => "enterococcus_faecalis",
-    1352 => "enterococcus_faecium",
-    562 => "escherichia_coli",
-    263 => "francisella_tularensis",
-    2058152 => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii",
-    1134687 => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii",
-    571 => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii",
-    2587529 => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii",
-    573 => "Klebsiella_pneumoniae_variicola_quasipneumoniae",
-    1463165 => "Klebsiella_pneumoniae_variicola_quasipneumoniae",
-    244366 => "Klebsiella_pneumoniae_variicola_quasipneumoniae",
-    446 => "legionella_pneumophila",
-    1639 => "listeria_monocytogenes",
-    33894 => "mycobacterium_tuberculosis_bovis_africanum_canettii",
-    1765 => "mycobacterium_tuberculosis_bovis_africanum_canettii",
-    78331 => "mycobacterium_tuberculosis_bovis_africanum_canettii",
-    77643 => "mycobacterium_tuberculosis_bovis_africanum_canettii",
-    36809 => "mycobacteroides_abscessus",
-    2096 => "mycoplasma_gallisepticum",
-    1464 => "paenibacillus_larvae",
-    287 => "pseudomonas_aeruginosa",
-    28901 => "salmonella_enterica",
-    615 => "serratia_marcescens",
-    1280 => "staphylococcus_aureus",
-    29388 => "staphylococcus_capitis",
-    1314 => "spyogenes",
-    630 => "yersinia_enterocolitica"
+    470     => { schema => "acinetobacter_baumannii",                              version => "1.0" },
+    1392    => { schema => "bacillus_anthracis",                                   version => "1.0" },
+    520     => { schema => "bordetella_pertussis",                                 version => "1.0" },
+    235     => { schema => "brucella_spp",                                         version => "1.0" },
+    36855   => { schema => "brucella_spp",                                         version => "1.0" },
+    120577  => { schema => "brucella_spp",                                         version => "1.0" },
+    1218315 => { schema => "brucella_spp",                                         version => "1.0" },
+    29459   => { schema => "brucella_melitensis",                                  version => "1.0" },
+    444163  => { schema => "brucella_spp",                                         version => "1.0" },
+    29460   => { schema => "brucella_spp",                                         version => "1.0" },
+    236     => { schema => "brucella_spp",                                         version => "1.0" },
+    120576  => { schema => "brucella_spp",                                         version => "1.0" },
+    29461   => { schema => "brucella_spp",                                         version => "1.0" },
+    13373   => { schema => "burkholderia_mallei_fli",                              version => "1.0" },
+    111527  => { schema => "burkholderia_pseudomallei",                            version => "1.1" },
+    197     => { schema => "campylobacter_jejuni_coli",                            version => "1.3" },
+    195     => { schema => "campylobacter_jejuni_coli",                            version => "1.3" },
+    1496    => { schema => "clostridioides_difficile",                             version => "2.0" },
+    1502    => { schema => "clostridium_perfringens",                              version => "1.0" },
+    1717    => { schema => "corynebacterium_diphtheriae",                          version => "1.0" },
+    1719    => { schema => "corynebacterium_pseudotuberculosis",                   version => "1.0" },
+    413503  => { schema => "cronobacter_sakazakii_malonaticus",                   version => "1.0" },
+    28141   => { schema => "cronobacter_sakazakii_malonaticus",                   version => "1.0" },
+    1351    => { schema => "enterococcus_faecalis",                                version => "1.0" },
+    1352    => { schema => "enterococcus_faecium",                                 version => "1.0" },
+    562     => { schema => "escherichia_coli",                                     version => "1.0" },
+    263     => { schema => "francisella_tularensis",                               version => "1.0" },
+    2058152 => { schema => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii", version => "1.0" },
+    1134687 => { schema => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii", version => "1.0" },
+    571     => { schema => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii", version => "1.0" },
+    2587529 => { schema => "Klebsiella_oxytoca_grimontii_michiganensis_pasteurii", version => "1.0" },
+    573     => { schema => "Klebsiella_pneumoniae_variicola_quasipneumoniae",      version => "1.0" },
+    1463165 => { schema => "Klebsiella_pneumoniae_variicola_quasipneumoniae",      version => "1.0" },
+    244366  => { schema => "Klebsiella_pneumoniae_variicola_quasipneumoniae",      version => "1.0" },
+    446     => { schema => "legionella_pneumophila",                               version => "1.0" },
+    1639    => { schema => "listeria_monocytogenes",                               version => "1.0" },
+    33894   => { schema => "mycobacterium_tuberculosis_bovis_africanum_canettii",  version => "2.1" },
+    1765    => { schema => "mycobacterium_tuberculosis_bovis_africanum_canettii",  version => "2.1" },
+    78331   => { schema => "mycobacterium_tuberculosis_bovis_africanum_canettii",  version => "2.1" },
+    77643   => { schema => "mycobacterium_tuberculosis_bovis_africanum_canettii",  version => "2.1" },
+    36809   => { schema => "mycobacteroides_abscessus",                            version => "1.0" },
+    2096    => { schema => "mycoplasma_gallisepticum",                             version => "1.0" },
+    1464    => { schema => "paenibacillus_larvae",                                 version => "1.0" },
+    287     => { schema => "pseudomonas_aeruginosa",                               version => "1.0" },
+    28901   => { schema => "salmonella_enterica",                                  version => "2.0" },
+    615     => { schema => "serratia_marcescens",                                  version => "1.0" },
+    1280    => { schema => "staphylococcus_aureus",                                version => "1.3" },
+    29388   => { schema => "staphylococcus_capitis",                               version => "1.0" },
+    1314    => { schema => "spyogenes",                                             version => "1.0" },
+    630     => { schema => "yersinia_enterocolitica",                              version => "1.0" },
 );
 
 
@@ -121,11 +121,12 @@ my $taxon_id = $gto_in->{ncbi_taxonomy_id};
 my @res = $api->query("taxonomy", ['eq', 'taxon_id', $taxon_id], ['select', 'taxon_name', 'lineage_ids', 'lineage_names']);
 
 # Query schema_map hash (taxon_id => schema dir name)
-my $dir_name;
+my ($dir_name, $schema_version);
 foreach my $lineage_id (reverse @{$res[0]->{lineage_ids} // [] }) {
     $lineage_id = int($lineage_id);
     if (exists $taxon_to_schema{$lineage_id}) {
-        $dir_name = $taxon_to_schema{$lineage_id};
+        $dir_name       = $taxon_to_schema{$lineage_id}{schema};
+        $schema_version = $taxon_to_schema{$lineage_id}{version};
         last;
     }
 }
@@ -226,8 +227,9 @@ if ($dir_name) {
         my $event_id = $gto_in->add_analysis_event($event);
 
         my $sequence_typing = {
-            allele_calls  => $allele_call_string,
-            schema_name   => $dir_name,
+            allele_profile  => $allele_call_string,
+            scheme_name   => $dir_name,
+            scheme_version => $schema_version,
             event_id      => $event_id,
             loci_total    => $total,
             loci_called   => $exact,
