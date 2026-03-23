@@ -486,6 +486,70 @@ def create_loci_coverage_plot(coverage_df):
     return barplot_html
 
 
+def create_low_coverage_warning(coverage_df, n_loci, config_json_path="config.json"):
+    """Return a warning HTML block if any genome has < 75% exact/INF allele calls.
+
+    Parameters
+    ----------
+    coverage_df : pd.DataFrame
+        Index = genome_id; columns include Exact, INF, and missing-code counts.
+    n_loci : int
+        Total number of loci in the schema.
+    config_json_path : str
+        Path to config.json (used to extract the input genome group link).
+
+    Returns
+    -------
+    str
+        Warning HTML block, or empty string if all genomes pass the threshold.
+    """
+    THRESHOLD = 0.75
+
+    exact_plus_inf = coverage_df["Exact"] + coverage_df.get("INF", pd.Series(0, index=coverage_df.index))
+    pct_exact = exact_plus_inf / n_loci if n_loci > 0 else exact_plus_inf * 0
+    flagged = pct_exact[pct_exact < THRESHOLD].index.tolist()
+
+    if not flagged:
+        return ""
+
+    genome_list_html = "".join(f"<li><code>{g}</code> ({pct_exact[g]*100:.1f}% exact)</li>" for g in flagged)
+
+    # Try to read the input genome group from config.json
+    genome_group_html = ""
+    try:
+        if os.path.exists(config_json_path):
+            with open(config_json_path) as f:
+                config = json.load(f)
+            genome_group = config.get("params", {}).get("input_genome_group", "")
+            if genome_group:
+                group_name = os.path.basename(genome_group.rstrip("/"))
+                genome_group_html = (
+                    f'<p>You may rerun the analysis after removing these genomes from your input genome group: '
+                    f'<a id="genomeGroupLink" href="#" target="_blank">{group_name}</a></p>'
+                    f'<script>'
+                    f'document.getElementById("genomeGroupLink").href = '
+                    f'window.location.origin + "/workspace{genome_group}";'
+                    f'</script>'
+                )
+    except Exception:
+        pass
+
+    return f"""
+  <div style="background:#fff3cd; border-left:5px solid #ffc107; border-radius:4px;
+              padding:16px 20px; margin-top:16px;">
+    <h4 style="margin-top:0; color:#856404;">Low Allele Call Coverage Detected</h4>
+    <p>
+      The following genome(s) have fewer than 75% exact or inferred allele matches.
+      A high proportion of non-exact allele calls can reduce the reliability of pairwise
+      distance calculations and may lead to inaccurate clustering results. We recommend
+      reviewing assembly quality and rerunning the analysis after removing these genomes:
+    </p>
+    <ul>{genome_list_html}</ul>
+    {genome_group_html}
+  </div>
+"""
+
+
 def create_summary_table(genome_ids, loci_ids, coverage_df, n_cgmlst_loci):
     """Build a small summary DataFrame for the report header table.
 
@@ -503,7 +567,7 @@ def create_summary_table(genome_ids, loci_ids, coverage_df, n_cgmlst_loci):
     """
     total_exact = int(coverage_df["Exact"].sum() + coverage_df.get("INF", 0).sum())
     total_cells = len(genome_ids) * len(loci_ids)
-    pct_exact = round(100 * total_exact / total_cells, 1) if total_cells > 0 else 0
+    pct_exact = int(round(100 * total_exact / total_cells)) if total_cells > 0 else 0
 
     summary = pd.DataFrame([{
         "Number of Genomes": len(genome_ids),
@@ -548,7 +612,7 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
       genetic relationships. <strong>Click any cell</strong> to compare the
       metadata for that pair of genomes in the panel below.
     </p>
-    
+
     <p>
     Pairwise allelic distances are computed from the cgMLST loci — the subset
     of loci successfully called in <em>every</em> genome.  A distance of zero
@@ -562,6 +626,27 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
           <!-- options populated dynamically -->
         </select>
       </label>
+      <label style="margin-left:16px; font-weight:bold;">
+        <input type="checkbox" id="hoverMetaToggle" onchange="recolorHeatmap()">
+        Show Metadata on Hover
+      </label>
+    </div>
+
+    <div class="linkage-controls" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+      <h4>Recolor Heatmap According to Linkage Thresholds:</h4>
+      <label>Strong Linkage Thresholds:
+        <input type="number" id="t0" value="0" disabled style="width:40px;">
+        <input type="number" id="t1a" value="10" style="width:40px;">
+      </label>
+      <label>Mid Linkage Thresholds:
+        <input type="number" id="t1b" value="10" style="width:40px;">
+        <input type="number" id="t2a" value="40" style="width:40px;">
+      </label>
+      <label>Weak Linkage Thresholds:
+        <input type="number" id="t2b" value="40" style="width:40px;">
+        <input type="number" id="t3" placeholder="Max" disabled style="width:40px;">
+      </label>
+      <button style="padding:8px 8px; font-size:14px;" onclick="recolorHeatmap()">Recolor</button>
     </div>
 
     <!-- Heatmap (full width) -->
@@ -675,8 +760,8 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
 
         document.getElementById('comparisonTitle').textContent =
           `Allelic Distance: ${{dist}} loci`;
-        document.getElementById('genome1Label').innerHTML = `<a href="https://www.bv-brc.org/view/Genome/${{id1}}" target="_blank">${{id1}}</a>`;
-        document.getElementById('genome2Label').innerHTML = `<a href="https://www.bv-brc.org/view/Genome/${{id2}}" target="_blank">${{id2}}</a>`;
+        document.getElementById('genome1Label').innerHTML = `<a href="${{window.location.origin}}/view/Genome/${{id1}}" target="_blank">${{id1}}</a>`;
+        document.getElementById('genome2Label').innerHTML = `<a href="${{window.location.origin}}/view/Genome/${{id2}}" target="_blank">${{id2}}</a>`;
 
         renderMetaTable(document.getElementById('meta1Table'), meta1);
         renderMetaTable(document.getElementById('meta2Table'), meta2);
@@ -686,8 +771,51 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         panel.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
       }}
 
+      // ===== Sync paired threshold inputs =====
+      (function syncThresholdInputs() {{
+        const t1a = document.getElementById('t1a');
+        const t1b = document.getElementById('t1b');
+        const t2a = document.getElementById('t2a');
+        const t2b = document.getElementById('t2b');
+
+        t1a.addEventListener('input', () => {{ t1b.value = t1a.value; }});
+        t1b.addEventListener('input', () => {{ t1a.value = t1b.value; }});
+        t2a.addEventListener('input', () => {{ t2b.value = t2a.value; }});
+        t2b.addEventListener('input', () => {{ t2a.value = t2b.value; }});
+
+        function validateOnBlur() {{
+          const t1 = parseFloat(t1a.value);
+          const t2 = parseFloat(t2a.value);
+          if (t1 > t2) {{
+            alert('Strong threshold must be \u2264 Mid threshold. Resetting.');
+            t1a.value = t2; t1b.value = t2;
+          }}
+        }}
+        t1a.addEventListener('blur', validateOnBlur);
+        t1b.addEventListener('blur', validateOnBlur);
+      }})();
+
+      // ===== Threshold binning helpers =====
+      function assignBin(val, t1, t2) {{
+        if (val === 0) return 0;
+        if (val <= t1) return 1;
+        if (val <= t2) return 2;
+        return 3;
+      }}
+
+      function getLinkageColorscale() {{
+        return [
+          [0.000, '#440154'],
+          [0.333, '#3b528b'],
+          [0.667, '#21918c'],
+          [1.000, '#fde725'],
+        ];
+      }}
+
       // ===== Draw / redraw heatmap =====
       function recolorHeatmap() {{
+        const t1        = parseInt(document.getElementById('t1a').value) || 10;
+        const t2        = parseInt(document.getElementById('t2a').value) || 40;
         const metaField = document.getElementById('metadataFieldSelect').value;
 
         let labels = genomeLabels.slice();
@@ -699,20 +827,44 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
           matrix = reordered.newMatrix;
         }}
 
+        const bins = matrix.map(row => row.map(val => assignBin(val, t1, t2)));
+
+        const showHoverMeta = document.getElementById('hoverMetaToggle').checked;
         const hoverText = matrix.map((row, i) =>
-          row.map((val, j) => `${{labels[i]}} vs ${{labels[j]}}<br>Allelic Distance: ${{val}}<br><i>Click for full metadata</i>`)
+          row.map((val, j) => {{
+            let text = `${{labels[i]}} vs ${{labels[j]}}<br>Allelic Distance: ${{val}}`;
+            if (showHoverMeta) {{
+              const meta1 = idToMeta[labels[i]] || {{ genome_id: labels[i] }};
+              const meta2 = idToMeta[labels[j]] || {{ genome_id: labels[j] }};
+              text += `<br><br><b>Genome 1:</b> ${{labels[i]}}<br>`;
+              for (const [field, fval] of Object.entries(meta1)) {{
+                text += `${{field}}: ${{fval}}<br>`;
+              }}
+              text += `<br><b>Genome 2:</b> ${{labels[j]}}<br>`;
+              for (const [field, fval] of Object.entries(meta2)) {{
+                text += `${{field}}: ${{fval}}<br>`;
+              }}
+            }} else {{
+              text += `<br><i>Click for full metadata</i>`;
+            }}
+            return text;
+          }})
         );
 
         const traceData = [{{
-          z:          matrix,
+          z:          bins,
           x:          labels,
           y:          labels,
           type:       'heatmap',
-          colorscale: 'Viridis',
+          colorscale: getLinkageColorscale(),
+          zmin: 0,
+          zmax: 3,
           text:       hoverText,
           hoverinfo:  'text',
           colorbar: {{
-            title: 'Allelic Distance'
+            tickvals:  [0, 1, 2, 3],
+            ticktext:  ['Identical (0)', 'Strong (\u22641t1)', 'Mid (\u22642t2)', 'Weak (>t2)'],
+            title:     'Linkage'
           }}
         }}];
 
@@ -722,9 +874,10 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         const heatmapHeight = Math.max(500, Math.min(1800, n * 40 + 150));
 
         const layout = {{
-          title: 'Allelic Distance Heatmap' +
+          title: `Allelic Distance Heatmap (Strong \u2264${{t1}}, Mid \u2264${{t2}})` +
                  (metaField ? ` – Reordered by "${{metaField}}"` : ''),
           height: heatmapHeight,
+          width: heatmapHeight,
           xaxis: {{ type: 'category', tickangle: 45 }},
           yaxis: {{ type: 'category', tickangle: 45 }}
         }};
@@ -747,9 +900,298 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
     return heatmap_html
 
 
+def build_distance_analysis_html():
+    """Build interactive Close Pairs and Distance Matrix Table HTML blocks.
+
+    Reuses the ``genomeLabels`` and ``distMatrix`` JavaScript globals
+    already embedded by :func:`build_heatmap_html`.  Must appear in the
+    HTML *after* the heatmap section.
+
+    Returns
+    -------
+    html : str
+    """
+    return """
+    <!-- ================================================================== -->
+    <!-- CLOSE PAIRS                                                         -->
+    <!-- ================================================================== -->
+    <h2>Close Genome Pairs</h2>
+    <p>
+      The table below lists unique genome pairs sorted by allelic distance,
+      making it easy to identify the most closely related samples. Only the
+      upper triangle of the distance matrix is shown (each pair appears once).
+      Adjust the <strong>maximum distance</strong> threshold and click
+      <em>Apply</em> to narrow the list. Click any column header to sort.
+    </p>
+    <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:12px;">
+      <label style="display:flex; align-items:center; gap:6px;">
+        Show pairs with distance &le;
+        <input type="number" id="cpThreshold" value="20" min="0"
+               style="padding:4px 8px; width:70px; font-size:13px;">
+      </label>
+      <button onclick="buildClosePairs()"
+              style="padding:4px 12px; cursor:pointer;">Apply</button>
+      <button onclick="document.getElementById('cpThreshold').value='20'; buildClosePairs();"
+              style="padding:4px 12px; cursor:pointer;">Reset</button>
+      <span id="cpCount" style="color:#555; font-size:13px;"></span>
+    </div>
+    <div style="overflow:auto; max-height:400px; border:1px solid #ccc; border-radius:4px;">
+      <table id="cpTable" style="border-collapse:collapse; width:100%;">
+        <thead>
+          <tr style="position:sticky; top:0; background:#f0f0f0; z-index:2;">
+            <th onclick="sortClosePairs('g1')"
+                style="padding:6px 12px; border:1px solid #ddd; cursor:pointer; user-select:none;">
+              Genome A <span id="cpSort_g1"></span></th>
+            <th onclick="sortClosePairs('g2')"
+                style="padding:6px 12px; border:1px solid #ddd; cursor:pointer; user-select:none;">
+              Genome B <span id="cpSort_g2"></span></th>
+            <th onclick="sortClosePairs('dist')"
+                style="padding:6px 12px; border:1px solid #ddd; cursor:pointer; user-select:none;">
+              Distance <span id="cpSort_dist">&#9650;</span></th>
+          </tr>
+        </thead>
+        <tbody id="cpBody"></tbody>
+      </table>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- FULL DISTANCE MATRIX TABLE                                          -->
+    <!-- ================================================================== -->
+    <h2>Distance Matrix Table</h2>
+    <p>
+      The table below presents the full pairwise allelic distance matrix in a
+      searchable, color-coded format. Each cell shows the number of alleles that
+      differ between two genomes. Cell colors follow the same linkage thresholds
+      set in the heatmap controls above. Use the <strong>search box</strong> to
+      filter rows by genome ID, or set a <strong>maximum distance</strong> to
+      show only rows that contain at least one genome within that distance.
+    </p>
+    <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:10px;">
+      <label style="display:flex; align-items:center; gap:6px;">
+        Search genome ID:
+        <input type="text" id="dmSearch" placeholder="Filter rows by ID..."
+               style="padding:4px 8px; width:200px; font-size:13px;">
+      </label>
+      <label style="display:flex; align-items:center; gap:6px;">
+        Show rows with distance &le;
+        <input type="number" id="dmMaxDist" placeholder="e.g. 20" min="0"
+               style="padding:4px 8px; width:80px; font-size:13px;">
+      </label>
+      <button onclick="buildDistTable()"
+              style="padding:4px 12px; cursor:pointer;">Apply</button>
+      <button onclick="document.getElementById('dmSearch').value='';
+                       document.getElementById('dmMaxDist').value='';
+                       buildDistTable();"
+              style="padding:4px 12px; cursor:pointer;">Reset</button>
+      <span id="dmRowCount" style="color:#555; font-size:13px;"></span>
+    </div>
+    <!-- Color legend -->
+    <div style="display:flex; gap:16px; align-items:center; margin-bottom:10px; font-size:12px; flex-wrap:wrap;">
+      <strong>Color key:</strong>
+      <span style="background:#2ca02c; color:white; padding:2px 8px; border-radius:3px;">Identical (0)</span>
+      <span style="background:#a8d5a2; color:#333; padding:2px 8px; border-radius:3px;">Strong linkage (&le; t1)</span>
+      <span style="background:#ffe066; color:#333; padding:2px 8px; border-radius:3px;">Mid linkage (&le; t2)</span>
+      <span style="background:#f4a460; color:#333; padding:2px 8px; border-radius:3px;">Weak linkage (&gt; t2)</span>
+    </div>
+    <div id="dmTableWrapper"
+         style="overflow:auto; max-height:600px; border:1px solid #ccc; border-radius:4px;">
+      <table id="dmTable" style="border-collapse:collapse; white-space:nowrap;"></table>
+    </div>
+
+    <script>
+      // ===== Shared color helper =====
+      function getDmColor(val, t1, t2) {
+        if (val === 0) return { bg: '#2ca02c', fg: 'white' };
+        if (val <= t1) return { bg: '#a8d5a2', fg: '#333' };
+        if (val <= t2) return { bg: '#ffe066', fg: '#333' };
+        return { bg: '#f4a460', fg: '#333' };
+      }
+
+      function getDmThresholds() {
+        const t1El = document.getElementById('t1a');
+        const t2El = document.getElementById('t2a');
+        return {
+          t1: t1El ? (parseInt(t1El.value) || 10) : 10,
+          t2: t2El ? (parseInt(t2El.value) || 40) : 40,
+        };
+      }
+
+      // ===== Close Pairs =====
+      let _cpPairs     = [];
+      let _cpSortField = 'dist';
+      let _cpSortAsc   = true;
+
+      function buildClosePairs() {
+        const threshold = parseFloat(document.getElementById('cpThreshold').value);
+        const labels  = genomeLabels;
+        const matrix  = distMatrix;
+        const n       = labels.length;
+        const { t1, t2 } = getDmThresholds();
+
+        _cpPairs = [];
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const d = matrix[i][j];
+            if (!isNaN(threshold) && d <= threshold) {
+              _cpPairs.push({ g1: labels[i], g2: labels[j], dist: d });
+            }
+          }
+        }
+        _renderClosePairs(t1, t2);
+      }
+
+      function sortClosePairs(field) {
+        if (_cpSortField === field) {
+          _cpSortAsc = !_cpSortAsc;
+        } else {
+          _cpSortField = field;
+          _cpSortAsc   = (field === 'dist');
+        }
+        const { t1, t2 } = getDmThresholds();
+        _renderClosePairs(t1, t2);
+      }
+
+      function _renderClosePairs(t1, t2) {
+        ['g1', 'g2', 'dist'].forEach(f => {
+          const el = document.getElementById('cpSort_' + f);
+          if (el) el.textContent = '';
+        });
+        const sortEl = document.getElementById('cpSort_' + _cpSortField);
+        if (sortEl) sortEl.textContent = _cpSortAsc ? ' \u25b2' : ' \u25bc';
+
+        const sorted = _cpPairs.slice().sort((a, b) => {
+          const av = a[_cpSortField], bv = b[_cpSortField];
+          const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+          return _cpSortAsc ? cmp : -cmp;
+        });
+
+        const tbody = document.getElementById('cpBody');
+        tbody.innerHTML = '';
+
+        if (sorted.length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 3;
+          td.style.cssText = 'padding:14px; text-align:center; color:#666; font-style:italic;';
+          td.textContent = 'No pairs found within the specified distance threshold.';
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+        } else {
+          sorted.forEach(pair => {
+            const { bg, fg } = getDmColor(pair.dist, t1, t2);
+            const tr  = document.createElement('tr');
+            const tdg1 = document.createElement('td');
+            const tdg2 = document.createElement('td');
+            const tdd  = document.createElement('td');
+            tdg1.style.cssText = 'padding:4px 12px; border:1px solid #ddd; font-size:12px;';
+            tdg2.style.cssText = 'padding:4px 12px; border:1px solid #ddd; font-size:12px;';
+            tdd.style.cssText  = 'padding:4px 12px; border:1px solid #ddd; font-size:12px; text-align:center; font-weight:bold; background:' + bg + '; color:' + fg + ';';
+            tdg1.textContent = pair.g1;
+            tdg2.textContent = pair.g2;
+            tdd.textContent  = pair.dist;
+            tr.appendChild(tdg1); tr.appendChild(tdg2); tr.appendChild(tdd);
+            tbody.appendChild(tr);
+          });
+        }
+
+        document.getElementById('cpCount').textContent =
+          sorted.length === 1 ? '1 pair found' : sorted.length + ' pairs found';
+      }
+
+      // ===== Full Distance Matrix Table =====
+      function buildDistTable() {
+        const searchVal  = document.getElementById('dmSearch').value.trim().toLowerCase();
+        const maxDistRaw = document.getElementById('dmMaxDist').value.trim();
+        const maxDist    = maxDistRaw !== '' ? parseFloat(maxDistRaw) : null;
+        const { t1, t2 } = getDmThresholds();
+
+        const labels = genomeLabels;
+        const matrix = distMatrix;
+        const n      = labels.length;
+
+        const visibleRows = [];
+        labels.forEach((lbl, i) => {
+          const matchSearch = !searchVal || lbl.toLowerCase().includes(searchVal);
+          const matchDist   = maxDist === null ||
+            matrix[i].some((v, j) => i !== j && v <= maxDist);
+          if (matchSearch && matchDist) visibleRows.push(i);
+        });
+
+        const table    = document.getElementById('dmTable');
+        const fragment = document.createDocumentFragment();
+
+        const thead  = document.createElement('thead');
+        const hRow   = document.createElement('tr');
+        const corner = document.createElement('th');
+        corner.style.cssText = 'position:sticky; top:0; left:0; z-index:4; background:#fff; padding:4px 8px; border:1px solid #ddd; min-width:120px;';
+        corner.textContent = '';
+        hRow.appendChild(corner);
+        labels.forEach(lbl => {
+          const th = document.createElement('th');
+          th.style.cssText = 'position:sticky; top:0; z-index:2; background:#f8f8f8; border:1px solid #ddd; padding:2px; font-size:10px; font-weight:normal; writing-mode:vertical-rl; transform:rotate(180deg); height:110px; vertical-align:bottom; text-align:left;';
+          th.textContent = lbl;
+          hRow.appendChild(th);
+        });
+        thead.appendChild(hRow);
+        fragment.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        visibleRows.forEach(i => {
+          const tr    = document.createElement('tr');
+          const rowTh = document.createElement('th');
+          rowTh.style.cssText = 'position:sticky; left:0; z-index:1; background:#f8f8f8; border:1px solid #ddd; padding:3px 8px; font-size:11px; font-weight:normal; white-space:nowrap; text-align:left;';
+          rowTh.textContent = labels[i];
+          tr.appendChild(rowTh);
+
+          labels.forEach((lbl, j) => {
+            const val        = matrix[i][j];
+            const { bg, fg } = getDmColor(val, t1, t2);
+            const td         = document.createElement('td');
+            td.style.cssText = 'background:' + bg + '; color:' + fg + '; padding:3px 5px; border:1px solid #ddd; text-align:center; font-size:11px; min-width:28px;';
+            td.textContent   = val;
+            td.title         = labels[i] + ' vs ' + lbl + ': ' + val + ' allele differences';
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+
+        if (visibleRows.length === 0) {
+          const emptyTr = document.createElement('tr');
+          const emptyTd = document.createElement('td');
+          emptyTd.colSpan = n + 1;
+          emptyTd.style.cssText = 'padding:16px; text-align:center; color:#666; font-style:italic;';
+          emptyTd.textContent   = 'No genomes match the current filters.';
+          emptyTr.appendChild(emptyTd);
+          tbody.appendChild(emptyTr);
+        }
+        fragment.appendChild(tbody);
+
+        table.innerHTML = '';
+        table.appendChild(fragment);
+
+        document.getElementById('dmRowCount').textContent =
+          visibleRows.length === n
+            ? 'Showing all ' + n + ' genomes'
+            : 'Showing ' + visibleRows.length + ' of ' + n + ' genomes';
+      }
+
+      // ===== Initialise on load + sync with heatmap thresholds =====
+      document.addEventListener('DOMContentLoaded', function () {
+        buildClosePairs();
+        buildDistTable();
+
+        const t1In = document.getElementById('t1a');
+        const t2In = document.getElementById('t2a');
+        if (t1In) t1In.addEventListener('input', function () { buildClosePairs(); buildDistTable(); });
+        if (t2In) t2In.addEventListener('input', function () { buildClosePairs(); buildDistTable(); });
+      });
+    </script>
+    """
+
+
 def define_html_template(summary_table_html, barplot_html,
-                          heatmap_html, metadata_json_string,
-                          n_genomes, n_loci):
+                          heatmap_html, distance_analysis_html, metadata_json_string,
+                          n_genomes, n_loci, low_coverage_warning_html=""):
     """Assemble the complete cgMLST report HTML.
 
     Parameters
@@ -852,9 +1294,7 @@ def define_html_template(summary_table_html, barplot_html,
     cgMLST is a standardized, high-resolution approach to bacterial typing
     that compares allele assignments across hundreds to thousands of shared
     genes (loci), providing a reproducible and portable measure of genomic
-    relatedness.
-
-    Note, you can download the images of the plots in this
+    relatedness. Note, you can download the images of the plots in this
     report by clicking on the camera icon in the upper left-hand corner of
     each plot.
   </p>
@@ -863,48 +1303,52 @@ def define_html_template(summary_table_html, barplot_html,
   <p>
     The analysis begins with a set of bacterial genome assemblies and a
     curated cgMLST schema — a defined collection of loci representative of
-    the core genome of the species or closely related species. chewBBACA's AlleleCall module identifies
-    and assigns allele numbers at each locus in each genome. Please note, poor quality assemblies can 
-    impact performance.
+    the core genome of the target species or closely related species.
+    chewBBACA's AlleleCall module identifies and assigns allele numbers at
+    each locus in each genome.
   </p>
   <p>
-    Loci that could not be reliably exact receive one of the following
-    classification codes:
+    The resulting allele calls are used throughout the remainder of the
+    analysis.
+    <a href="https://github.com/zheminzhou/pHierCC/tree/master" target="_blank">pHierCC</a>
+    applies an unsupervised machine learning algorithm that organises genomes
+    into a hierarchical tree of nested clusters. Cluster assignments are
+    informed by a representative set of precomputed clustering data for the
+    same species.
+    <a href="https://github.com/achtman-lab/GrapeTree" target="_blank">GrapeTree</a>
+    uses the MSTree V2 algorithm to construct minimum spanning trees, which
+    are available for viewing in the analysis results.
   </p>
-<p>
-  <strong>LNF – Locus Not Found:</strong>
-  No match detected in the genome.
-</p>
+  <p>The AlleleCall module assigns one of the following classification codes to each locus:</p>
+  <div style="background:#e8f4f8; border-left:5px solid #2196f3; border-radius:4px;
+              padding:16px 20px; margin-top:8px;">
+    <dl style="margin:0; display:grid; grid-template-columns:max-content 1fr; gap:6px 20px;
+               align-items:baseline;">
+      <dt style="font-weight:bold; white-space:nowrap;">EXC</dt>
+      <dd style="margin:0;">Exact Locus Match — an exact allele match was found.</dd>
 
-<p>
-  <strong>ASM – Allele Smaller than Minimum:</strong>
-  Matched region is too short.
-</p>
+      <dt style="font-weight:bold; white-space:nowrap;">INF</dt>
+      <dd style="margin:0;">Inferred New Allele — a valid but previously unobserved allele sequence.</dd>
 
-<p>
-  <strong>ALM – Allele Larger than Maximum:</strong>
-  Matched region is too long.
-</p>
+      <dt style="font-weight:bold; white-space:nowrap;">LNF</dt>
+      <dd style="margin:0;">Locus Not Found — no match detected in the genome.</dd>
 
-<p>
-  <strong>NIPH – Non-Informative Paralogous Hit:</strong>
-  Multiple matches of equal quality.
-</p>
+      <dt style="font-weight:bold; white-space:nowrap;">ASM</dt>
+      <dd style="margin:0;">Allele Smaller than Minimum — the matched region is too short.</dd>
 
-<p>
-  <strong>NIPHEM – Non-Informative Paralogous Hit with Exact Match:</strong>
-  Multiple exact matches.
-</p>
+      <dt style="font-weight:bold; white-space:nowrap;">ALM</dt>
+      <dd style="margin:0;">Allele Larger than Maximum — the matched region is too long.</dd>
 
-<p>
-  <strong>PLOT3 / PLOT5 – Possible Locus on Tip of Contig (3′ or 5′ end):</strong>
-  The locus may lie at the end of a contig.
-</p>
+      <dt style="font-weight:bold; white-space:nowrap;">NIPH</dt>
+      <dd style="margin:0;">Non-Informative Paralogous Hit — multiple matches of equal quality.</dd>
 
-<p>
-  <strong>INF – Inferred New Allele:</strong>
-  A valid but previously unobserved allele sequence.
-</p>
+      <dt style="font-weight:bold; white-space:nowrap;">NIPHEM</dt>
+      <dd style="margin:0;">Non-Informative Paralogous Hit with Exact Match — multiple exact matches.</dd>
+
+      <dt style="font-weight:bold; white-space:nowrap;">PLOT3 / PLOT5</dt>
+      <dd style="margin:0;">Possible Locus on Tip of Contig — the locus may lie at the 3′ or 5′ end of a contig.</dd>
+    </dl>
+  </div>
 
 
   <!-- ================================================================== -->
@@ -934,6 +1378,7 @@ def define_html_template(summary_table_html, barplot_html,
       {barplot_html}
     </div>
   </div>
+  {low_coverage_warning_html}
 
   <!-- ================================================================== -->
   <!-- METADATA                                                             -->
@@ -1009,7 +1454,7 @@ def define_html_template(summary_table_html, barplot_html,
         headers.forEach(header => {{
           const td = document.createElement('td');
           if (header === 'genome_id') {{
-            td.innerHTML = `<a href="https://www.bv-brc.org/view/Genome/${{row[header]}}" target="_blank">${{row[header]}}</a>`;
+            td.innerHTML = `<a href="${{window.location.origin}}/view/Genome/${{row[header]}}" target="_blank">${{row[header]}}</a>`;
           }} else {{
             td.innerHTML = row[header];
           }}
@@ -1041,6 +1486,11 @@ def define_html_template(summary_table_html, barplot_html,
   {heatmap_html}
 
   <!-- ================================================================== -->
+  <!-- CLOSE PAIRS + DISTANCE MATRIX TABLE                                 -->
+  <!-- ================================================================== -->
+  {distance_analysis_html}
+
+  <!-- ================================================================== -->
   <!-- REFERENCES                                                           -->
   <!-- ================================================================== -->
   <h3>References</h3>
@@ -1067,7 +1517,9 @@ def define_html_template(summary_table_html, barplot_html,
         summary_table_html=summary_table_html,
         barplot_html=barplot_html,
         heatmap_html=heatmap_html,
+        distance_analysis_html=distance_analysis_html,
         metadata_json_string=metadata_json_string,
+        low_coverage_warning_html=low_coverage_warning_html,
     )
 
     return html
@@ -1129,6 +1581,9 @@ def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir):
     summary_table_html = create_summary_table(genome_ids, loci_ids, coverage_df,
                                                n_cgmlst_loci=n_cgmlst)
 
+    click.echo("Checking loci coverage thresholds ...")
+    low_coverage_warning_html = create_low_coverage_warning(coverage_df, n_loci)
+
     click.echo("Assembling heatmap ...")
     svg_candidates = sorted(glob.glob(os.path.join(svg_dir, '*.svg')))
     if svg_candidates:
@@ -1138,14 +1593,19 @@ def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir):
         svg_content = '<p style="color:#555;">Tree SVG not found. Expected at {}/*.svg</p>'.format(svg_dir)
     heatmap_html = build_heatmap_html(clustered_labels, clustered_matrix, metadata_json_string, svg_content=svg_content)
 
+    click.echo("Building distance analysis tables ...")
+    distance_analysis_html = build_distance_analysis_html()
+
     click.echo("Writing HTML report ...")
     html = define_html_template(
         summary_table_html=summary_table_html,
         barplot_html=barplot_html,
         heatmap_html=heatmap_html,
+        distance_analysis_html=distance_analysis_html,
         metadata_json_string=metadata_json_string,
         n_genomes=n_genomes,
         n_loci=n_loci,
+        low_coverage_warning_html=low_coverage_warning_html,
     )
 
     with open(html_report_path, "w") as f:
