@@ -100,8 +100,6 @@ sub run
     my $unprocessed_id_fp = "$work_dir/unprocessed_genome_ids.txt";
     my @unprocessed_genome_ids;
     my $master_table_fp = application_backend_dir . "/CoreGenomeMLST/precomputed_clusters/refs/" . $schema_name . "_11_25_2025_joined.tsv";
-    my $precomputed_clusters_dir = application_backend_dir . "/CoreGenomeMLST/precomputed_clusters/";
-    my $precomputed_clusters_path = $precomputed_clusters_dir . lc($params->{input_schema_selection}) . ".cgMLSTv1.npz";
  
     if ($params->{input_genome_type} eq 'genome_group')
     {
@@ -274,7 +272,6 @@ sub run
 
     $config_vars{cores} = $ENV{P3_ALLOCATED_CPU} // 2;
     $config_vars{schema_location} = application_backend_dir . "/CoreGenomeMLST/chewbbaca_schemas";
-    $config_vars{precomputed_clusters_path} = $precomputed_clusters_path;
     $config_vars{master_tsv} = $master_table_fp;
     $config_vars{snakemake} = $snakemake;
     $config_vars{workflow_dir} = $wf_dir;

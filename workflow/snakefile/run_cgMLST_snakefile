@@ -23,19 +23,14 @@ genome_group_name = data["params"]["input_genome_group"].split("/")[-1]
 processed_genomes = Path(processed_genome_ids)
 unprocessed_genomes = Path(unprocessed_genome_ids)
 
-has_precomputed = os.path.exists(master_TSV) and os.path.exists(data["precomputed_clusters_path"])
-if not has_precomputed:
-    sys.stderr.write("No precomputed clusters found for this schema — clustering step will be skipped.\n")
 
-# ADD REPORT OPTION FOR EVERY CASE
 if unprocessed_genomes.stat().st_size == 0 and processed_genomes.stat() !=0:
-    print("All old genomes!")
+    print("All genomes have precompueted allelic profiles - pulling from API")
     rule_all_list = [
         "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
-        "{}/{}_distance.phylip".format(output_dir, genome_group_name)
+        "{}/{}_distance.phylip".format(output_dir, genome_group_name),
+        "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name)
     ]
-    if has_precomputed:
-        rule_all_list.append("{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name))
     # genomes pulled from API ahead of snakefile are the only genomes
     final_allele_result = "{}/precomputed_allele_results.tsv".format(work_dir)
     final_allele_result_clean = "{}/precomputed_allele_results_clean.tsv".format(work_dir)
@@ -48,10 +43,9 @@ elif processed_genomes.stat().st_size == 0 and unprocessed_genomes.stat() !=0:
         "{}/new_genomes_allele_call_complete.txt".format(work_dir),
         "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
         "{}/allelecall_evaulation_complete.txt".format(work_dir),
-        "{}/{}_distance.phylip".format(output_dir, genome_group_name)
+        "{}/{}_distance.phylip".format(output_dir, genome_group_name),
+        "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name)
     ]
-    if has_precomputed:
-        rule_all_list.append("{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name))
     final_allele_result = "{}/new_genomes_allele_call/results_alleles.tsv".format(work_dir)
     final_allele_result_clean = "{}/new_genomes_allele_call/results_alleles_clean.tsv".format(work_dir)
     allele_call_input_dir = "{}/new_genomes_allele_call/".format(work_dir)
@@ -63,12 +57,11 @@ else:
         "{}/new_genomes_allele_call_complete.txt".format(work_dir),
         "{}/extract_cg_mlst/cgMLSTschema95.txt".format(output_dir),
         "{}/genome_group_results.tsv".format(work_dir),
-        "{}/{}_distance.phylip".format(output_dir, genome_group_name)
+        "{}/{}_distance.phylip".format(output_dir, genome_group_name),
+        "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name)
         ]
-    if has_precomputed:
-        rule_all_list.append("{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name))
     # only the genome groups
-    allele_call_complete_touchpoint = "{}/genome_group_results.tsv".format(work_dir),
+    allele_call_complete_touchpoint = "{}/genome_group_results.tsv".format(work_dir)
     final_allele_result = "{}/genome_group_results.tsv".format(work_dir)
     final_allele_result_clean = "{}/genome_group_results_clean.tsv".format(work_dir)
     allele_call_input_dir = ""
@@ -174,41 +167,49 @@ rule run_allele_call_evaluator:
 
         touch {output.touchpoint}
         """
-
-rule run_local_clustering:
+   
+rule run_grapetree_cli:
     input:
-        master_TSV = data["master_tsv"],
-        reference_clusters = data["precomputed_clusters_path"],
-        allele_call_complete_touchpoint = allele_call_complete_touchpoint
+        allele_call_complete_touchpoint = allele_call_complete_touchpoint,
+        config = "{}/config.json".format(current_directory),
+        metadata = "{}/genome_metadata.json".format(current_directory),
+
     params:
-        clean_master_joined = "{}/master_joined_allele_results_clean.tsv".format(work_dir),
+        allele_call_input = final_allele_result,
+        allele_call_input_clean = final_allele_result_clean,
+        output_dir = directory(output_dir),
         tmp_out_name = "{}/{}_cluster_result_cgMLSTv1".format(work_dir, genome_group_name),
+        tmp_npz = "{}/{}_cluster_result_cgMLSTv1.npz".format(work_dir, genome_group_name),
         zipped_cluster_result = "{}/{}_cluster_result_cgMLSTv1.HierCC.gz".format(work_dir, genome_group_name),
         unzipped_cluster_result = "{}/{}_cluster_result_cgMLSTv1.HierCC".format(work_dir, genome_group_name),
-        tmp_npz = "{}/{}_cluster_result_cgMLSTv1.npz".format(work_dir, genome_group_name),
-        final_allele_results = final_allele_result,
+
     output:
-        master_joined = "{}/master_joined_allele_results.tsv".format(work_dir),
+        MSTreeV2 = "{}/{}_MSTreeV2.tre".format(output_dir, genome_group_name),
+        MSTreeV2_svg = "{}/{}_MSTreeV2.tre.svg".format(output_dir, genome_group_name),
+        phyloxml = "{}/{}_MSTreeV2.tre.phyloxml".format(output_dir, genome_group_name),
+        distance = "{}/{}_distance.phylip".format(output_dir, genome_group_name),
+        output_report = "{}/cgMLST_Report.html".format(output_dir),
         cluster_result = "{}/{}_cluster_result_cgMLSTv1.HierCC".format(output_dir, genome_group_name),
         npz = "{}/{}_cluster_result_cgMLSTv1.npz".format(output_dir, genome_group_name),
         final_out = "{}/result_alleles.tsv".format(output_dir)
 
     shell:
         """
-        # merge the new allele call results with the existing allele call results        
-        chewBBACA.py JoinProfiles \
-            -p {input.master_TSV} \
-            {params.final_allele_results} \
-            -o {output.master_joined}
+        core-genome-mlst-utils clean-allelic-profile {params.allele_call_input}
 
-        # run prep script for clustering with genome group + reference allele calls
-        core-genome-mlst-utils clean-allelic-profile {output.master_joined}
+        grapetree -p {params.allele_call_input_clean} -m distance > {output.distance}
 
-        # cluster using precomputed clusters
+        grapetree -p {params.allele_call_input_clean} -m MSTreeV2 > {output.MSTreeV2}
+
+        p3x-tree-to-svg {output.MSTreeV2}
+        
+        # converting to phyloxml tree
+        p3x-newick-to-phyloxml --verbose -l genome_id -g "collection_year,host_common_name,isolation_country,strain,genome_name,genome_id,accession,subtype,lineage,host_group,collection_date,geographic_group,geographic_location" {output.MSTreeV2}
+
+        # local clustering 
         pHierCC \
-            --profile {params.clean_master_joined} \
+            --profile {params.allele_call_input_clean} \
             --output {params.tmp_out_name} \
-            --append {input.reference_clusters}
         
         gunzip {params.zipped_cluster_result}
 
@@ -219,37 +220,9 @@ rule run_local_clustering:
         cp {params.tmp_npz} {output.npz}
         
         # copy final allele call result to output
-        cp {params.final_allele_results} {output.final_out}
-        """
-    
-rule run_grapetree_cli:
-    input:
-        allele_call_complete_touchpoint = allele_call_complete_touchpoint,
-        metadata = "{}/genome_metadata.json".format(current_directory)
-    params:
-        all_call_input = final_allele_result,
-        all_call_input_clean = final_allele_result_clean,
-        output_dir = directory(output_dir)
-    output:
-        MSTreeV2 = "{}/{}_MSTreeV2.tre".format(output_dir, genome_group_name),
-        MSTreeV2_svg = "{}/{}_MSTreeV2.tre.svg".format(output_dir, genome_group_name),
-        phyloxml = "{}/{}_MSTreeV2.tre.phyloxml".format(output_dir, genome_group_name),
-        distance = "{}/{}_distance.phylip".format(output_dir, genome_group_name),
-        output_report = "{}/cgMLST_Report.html".format(output_dir)
-    shell:
-        """
-        core-genome-mlst-utils clean-allelic-profile {params.all_call_input}
+        cp {params.allele_call_input} {output.final_out}
 
-        grapetree -p {params.all_call_input_clean} -m distance > {output.distance}
-
-        grapetree -p {params.all_call_input_clean} -m MSTreeV2 > {output.MSTreeV2}
-
-        p3x-tree-to-svg {output.MSTreeV2}
-        
-        # converting to phyloxml tree
-        p3x-newick-to-phyloxml --verbose -l genome_id -g "collection_year,host_common_name,isolation_country,strain,genome_name,genome_id,accession,subtype,lineage,host_group,collection_date,geographic_group,geographic_location" {output.MSTreeV2}
-        
         # reporting
-        core-genome-mlst-utils write-html-report {params.all_call_input} \
+        core-genome-mlst-utils write-html-report {input.config} \
             {input.metadata} {output.output_report} --svg-dir {params.output_dir}
         """
