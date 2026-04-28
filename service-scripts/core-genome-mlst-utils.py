@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 
 import numpy as np
 import pandas as pd
@@ -486,8 +487,75 @@ def create_loci_coverage_plot(coverage_df):
     return barplot_html
 
 
+def run_quast(quast_output_dir, fasta_file, threads=12, min_contig=200):
+    """Run QUAST on a FASTA file and write results to quast_output_dir.
+
+    Args:
+        quast_output_dir (str): Directory to save QUAST output.
+        fasta_file (str): Path to the input FASTA file.
+        threads (int): Number of threads. Defaults to 12.
+        min_contig (int): Minimum contig size. Defaults to 200.
+    """
+    os.makedirs(quast_output_dir, exist_ok=True)
+
+    quast_cmd = [
+        "quast.py",
+        "-o", quast_output_dir,
+        "-t", str(threads),
+        "--min-contig", str(min_contig),
+        fasta_file
+    ]
+
+    try:
+        print(f"Running QUAST with command: {' '.join(quast_cmd)}")
+        subprocess.run(quast_cmd, check=True)
+        print("QUAST analysis completed successfully!")
+    except subprocess.CalledProcessError as e:
+        print(f"Error running QUAST: {e}")
+
+
+def parse_quast_results(quast_output_dir):
+    """Parse key metrics from QUAST report.tsv.
+
+    Parameters
+    ----------
+    quast_output_dir : str
+        Directory containing QUAST output (must contain report.tsv).
+
+    Returns
+    -------
+    dict or None
+        Dict of selected metrics, or None if report.tsv is not found.
+    """
+    report_path = os.path.join(quast_output_dir, "report.tsv")
+    if not os.path.exists(report_path):
+        return None
+
+    metrics = {}
+    keys_of_interest = {
+        "# contigs",
+        "Largest contig",
+        "Total length",
+        "N50",
+        "GC (%)",
+        "L50",
+    }
+
+    with open(report_path) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 2 and parts[0] in keys_of_interest:
+                metrics[parts[0]] = parts[1]
+
+    return metrics if metrics else None
+
+
 def create_low_coverage_warning(coverage_df, n_loci, config_json_path="config.json"):
     """Return a warning HTML block if any genome has < 75% exact/INF allele calls.
+
+    For each flagged genome, QUAST is run using the FASTA found at
+    <input_data_dir>/raw_fastas/<genome_id> (from config.json). Results are written to
+    <output_data_dir>/qc_low_quality_genomes/<genome_id>/ and summarised in the HTML.
 
     Parameters
     ----------
@@ -496,7 +564,7 @@ def create_low_coverage_warning(coverage_df, n_loci, config_json_path="config.js
     n_loci : int
         Total number of loci in the schema.
     config_json_path : str
-        Path to config.json (used to extract the input genome group link).
+        Path to config.json.
 
     Returns
     -------
@@ -514,25 +582,94 @@ def create_low_coverage_warning(coverage_df, n_loci, config_json_path="config.js
 
     genome_list_html = "".join(f"<li><code>{g}</code> ({pct_exact[g]*100:.1f}% exact)</li>" for g in flagged)
 
-    # Try to read the input genome group from config.json
+    # Read config.json once for both genome group link and QUAST paths
     genome_group_html = ""
+    quast_results = {}
     try:
         if os.path.exists(config_json_path):
             with open(config_json_path) as f:
                 config = json.load(f)
+
             genome_group = config.get("params", {}).get("input_genome_group", "")
             if genome_group:
                 group_name = os.path.basename(genome_group.rstrip("/"))
                 genome_group_html = (
-                    f'<p>You may rerun the analysis after removing these genomes from your input genome group: '
-                    f'<a id="genomeGroupLink" href="#" target="_blank">{group_name}</a></p>'
+                    f'<p><a id="genomeGroupLink" href="#" target="_blank">Click here</a> '
+                    f'to review or edit your input genome group ({group_name}).</p>'
                     f'<script>'
                     f'document.getElementById("genomeGroupLink").href = '
                     f'window.location.origin + "/workspace{genome_group}";'
                     f'</script>'
                 )
-    except Exception:
-        pass
+
+            input_data_dir = config.get("input_data_dir", "")
+            output_dir = config.get("output_data_dir", "")
+            params = config.get("params", {})
+            output_path = params.get("output_path", "") + "." + params.get("output_file", "")
+            if input_data_dir and output_dir:
+                raw_fasta_dir = os.path.join(input_data_dir, "raw_fastas")
+                for genome_id in flagged:
+                    fasta_file = os.path.join(raw_fasta_dir, genome_id)
+                    if not os.path.exists(fasta_file):
+                        print(f"QUAST skipped for {genome_id}: FASTA not found at {fasta_file}")
+                        continue
+                    quast_out = os.path.join(output_dir, "qc_low_quality_genomes", genome_id)
+                    run_quast(quast_out, fasta_file)
+                    icarus = os.path.join(quast_out, "icarus.html")
+                    if os.path.exists(icarus):
+                        os.remove(icarus)
+                    metrics = parse_quast_results(quast_out)
+                    if metrics:
+                        quast_results[genome_id] = {"metrics": metrics, "output_path": output_path}
+    except Exception as e:
+        print(f"Warning: could not complete QUAST analysis: {e}")
+
+    # Build QUAST summary table with links
+    quast_html = ""
+    if quast_results:
+        quast_cols = ["# contigs", "Largest contig", "Total length", "N50", "GC (%)", "L50"]
+        header_cells = "".join(f'<th style="padding:4px 8px;">{c}</th>' for c in quast_cols)
+        rows_html = ""
+        for genome_id in flagged:
+            result = quast_results.get(genome_id)
+            if result is None:
+                continue
+            metrics = result["metrics"]
+            ws_base = result["output_path"]
+            ws_report = f"{ws_base}/qc_low_quality_genomes/{genome_id}/report.html"
+            ws_dir = f"{ws_base}/qc_low_quality_genomes/{genome_id}"
+            cells = "".join(f'<td style="padding:4px 8px;">{metrics.get(c, "N/A")}</td>' for c in quast_cols)
+            links_cell = (
+                f'<td style="padding:4px 8px; white-space:nowrap;">'
+                f'<a href="#" data-ws-path="{ws_report}" class="qc-ws-link" target="_blank">'
+                f'View genome quality report</a>'
+                f'<br><small><a href="#" data-ws-path="{ws_dir}" class="qc-ws-link" target="_blank">'
+                f'Additional assembly details available</a></small>'
+                f'</td>'
+            )
+            rows_html += f'<tr><td style="padding:4px 8px;"><code>{genome_id}</code></td>{cells}{links_cell}</tr>'
+        if rows_html:
+            quast_html = f"""
+    <h5 style="margin-top:12px; color:#856404;">Assembly Quality (QUAST)</h5>
+    <div style="overflow-x:auto;">
+      <table style="border-collapse:collapse; font-size:0.9em; width:100%;">
+        <thead>
+          <tr style="background:#ffeeba; text-align:left;">
+            <th style="padding:4px 8px;">Genome ID</th>
+            {header_cells}
+            <th style="padding:4px 8px;">Links</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows_html}
+        </tbody>
+      </table>
+    </div>
+    <script>
+      document.querySelectorAll('.qc-ws-link').forEach(function(el) {{
+        el.href = window.location.origin + '/workspace' + el.getAttribute('data-ws-path');
+      }});
+    </script>"""
 
     return f"""
   <div style="background:#fff3cd; border-left:5px solid #ffc107; border-radius:4px;
@@ -542,9 +679,11 @@ def create_low_coverage_warning(coverage_df, n_loci, config_json_path="config.js
       The following genome(s) have fewer than 75% exact or inferred allele matches.
       A high proportion of non-exact allele calls can reduce the reliability of pairwise
       distance calculations and may lead to inaccurate clustering results. We recommend
-      reviewing assembly quality and rerunning the analysis after removing these genomes:
+      reviewing assembly quality and consider rerunning the analysis without the following
+      genomes:
     </p>
     <ul>{genome_list_html}</ul>
+    {quast_html}
     {genome_group_html}
   </div>
 """
@@ -581,7 +720,7 @@ def create_summary_table(genome_ids, loci_ids, coverage_df, n_cgmlst_loci):
     return generate_table_html_2(summary, table_width="75%")
 
 
-def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_content=''):
+def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
     """Build the interactive heatmap HTML block.
 
     Parameters
@@ -592,8 +731,6 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         Clustered distance matrix.
     metadata_json_string : str
         JSON-serialised metadata (list of dicts).
-    svg_content : str
-        SVG file content to embed directly in the report.
 
     Returns
     -------
@@ -603,77 +740,91 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
     dist_matrix_json = json.dumps(dist_matrix)
 
     heatmap_html = """
-    <h2>Allelic Distance Heatmap</h2>
+    <h2>Allelic Distance Analysis</h2>
     <p>
-      The Allelic Distance Heatmap visualises pairwise differences in allele
-      assignments between genomes. Each cell represents the number of loci
-      where two genomes carry different alleles, considering only loci
-      successfully exact in both samples. Lower distances indicate closer
-      genetic relationships. <strong>Click any cell</strong> to compare the
-      metadata for that pair of genomes in the panel below.
+      The tabs below offer different views that visualize differences in allele assignments
+      between genomes. The values represent the number of loci that differ between two genomes.
+      Greater values indicate the genomes share fewer alleles. A distance of 0 means the two
+      genomes are identical at all compared loci. The Distance threshold set above applies to
+      all three tabs.
     </p>
 
-    <p>
-    Pairwise allelic distances are computed from the cgMLST loci — the subset
-    of loci successfully called in <em>every</em> genome.  A distance of zero
-    means the two genomes share identical alleles at every cgMLST locus.
-    </p>
-
-    <div class="heatmap-controls">
-      <h4>Filter and Sort the Data:</h4>
-      <label>Reorder Heatmap by Metadata:
-        <select id="metadataFieldSelect" onchange="recolorHeatmap()">
-          <!-- options populated dynamically -->
-        </select>
-      </label>
-      <label style="margin-left:16px; font-weight:bold;">
-        <input type="checkbox" id="hoverMetaToggle" onchange="recolorHeatmap()">
-        Show Metadata on Hover
-      </label>
-    </div>
-
-    <div class="linkage-controls" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
-      <h4>Recolor Heatmap According to Linkage Thresholds:</h4>
-      <label>Strong Linkage Thresholds:
-        <input type="number" id="t0" value="0" disabled style="width:40px;">
-        <input type="number" id="t1a" value="10" style="width:40px;">
-      </label>
-      <label>Mid Linkage Thresholds:
-        <input type="number" id="t1b" value="10" style="width:40px;">
-        <input type="number" id="t2a" value="40" style="width:40px;">
-      </label>
-      <label>Weak Linkage Thresholds:
-        <input type="number" id="t2b" value="40" style="width:40px;">
-        <input type="number" id="t3" placeholder="Max" disabled style="width:40px;">
-      </label>
-      <button style="padding:8px 8px; font-size:14px;" onclick="recolorHeatmap()">Recolor</button>
-    </div>
-
-    <!-- Heatmap (full width) -->
-    <div id="heatmap" style="width:100%;"></div>
-
-    <!-- Genome comparison panel (appears on cell click) -->
-    <div id="comparisonPanel" style="display:none; margin-top:18px; border:1px solid #ccc;
-         border-radius:6px; padding:16px; background:#fafafa;">
-      <h3 id="comparisonTitle" style="margin-top:0;"></h3>
-      <div style="display:flex; gap:24px; flex-wrap:wrap;">
-        <div style="flex:1; min-width:220px;">
-          <h4 id="genome1Label" style="margin-bottom:6px;"></h4>
-          <table id="meta1Table" style="width:100%; border-collapse:collapse;">
-          </table>
-        </div>
-        <div style="flex:1; min-width:220px;">
-          <h4 id="genome2Label" style="margin-bottom:6px;"></h4>
-          <table id="meta2Table" style="width:100%; border-collapse:collapse;">
-          </table>
-        </div>
+    <!-- Shared controls (visible in both views) -->
+    <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:center; margin-bottom:12px;">
+      <div class="linkage-controls" style="display:flex; gap:10px; align-items:center;">
+        <label style="font-weight:bold;">Distance threshold:
+          <input type="number" id="linkageThreshold" min="0" style="width:60px; margin-left:6px;">
+        </label>
       </div>
     </div>
 
-    <!-- Tree (full width, below heatmap) -->
-    <h3 style="margin-top:32px;">Phylogenetic Tree</h3>
-    <div id="svgContainer" style="width:100%; overflow-x:auto; margin-top:8px;">
-      TREE_SVG_PLACEHOLDER
+    <!-- View toggle tabs -->
+    <div style="display:flex; gap:0; margin-bottom:16px; border-bottom:2px solid #ccc;">
+      <button id="tabHeatmap"
+        onclick="switchView('heatmap')"
+        style="padding:8px 20px; cursor:pointer; border:1px solid #ccc; border-bottom:none;
+               background:#fff; font-size:14px; font-weight:bold; border-radius:4px 4px 0 0;
+               margin-bottom:-2px; border-bottom:2px solid #fff;">
+        Heatmap
+      </button>
+      <button id="tabClosePairs"
+        onclick="switchView('closePairs')"
+        style="padding:8px 20px; cursor:pointer; border:1px solid #ccc; border-bottom:none;
+               background:#f5f5f5; font-size:14px; color:#555; border-radius:4px 4px 0 0;
+               margin-bottom:-2px;">
+        Close Genome Pairs
+      </button>
+      <button id="tabDistTable"
+        onclick="switchView('distTable')"
+        style="padding:8px 20px; cursor:pointer; border:1px solid #ccc; border-bottom:none;
+               background:#f5f5f5; font-size:14px; color:#555; border-radius:4px 4px 0 0;
+               margin-bottom:-2px;">
+        Distance Matrix Table
+      </button>
+    </div>
+
+    <!-- Heatmap view -->
+    <div id="heatmapViewSection">
+      <p>
+        The Allelic Distance Heatmap view is a square matrix comparing all genomes in the input
+        genome group. A line of zeros goes across the heatmap where the same genome is compared
+        to itself. Interact with the heatmap by clicking any cell to compare the metadata for
+        that pair of genomes in the panel below.
+      </p>
+      <div class="heatmap-controls">
+        <h4>Filter and Sort the Data:</h4>
+        <label>Reorder Heatmap by Metadata:
+          <select id="metadataFieldSelect" onchange="recolorHeatmap()">
+            <!-- options populated dynamically -->
+          </select>
+        </label>
+        <label style="margin-left:16px; font-weight:bold;">
+          <input type="checkbox" id="hoverMetaToggle" onchange="recolorHeatmap()">
+          Show Metadata on Hover
+        </label>
+      </div>
+
+      <!-- Heatmap (full width) -->
+      <div id="heatmap" style="width:100%;"></div>
+
+      <!-- Genome comparison panel (appears on cell click) -->
+      <div id="comparisonPanel" style="display:none; margin-top:18px; border:1px solid #ccc;
+           border-radius:6px; padding:16px; background:#fafafa;">
+        <h3 id="comparisonTitle" style="margin-top:0;"></h3>
+        <div style="display:flex; gap:24px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:220px;">
+            <h4 id="genome1Label" style="margin-bottom:6px;"></h4>
+            <table id="meta1Table" style="width:100%; border-collapse:collapse;">
+            </table>
+          </div>
+          <div style="flex:1; min-width:220px;">
+            <h4 id="genome2Label" style="margin-bottom:6px;"></h4>
+            <table id="meta2Table" style="width:100%; border-collapse:collapse;">
+            </table>
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <script>
@@ -771,51 +922,39 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         panel.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
       }}
 
-      // ===== Sync paired threshold inputs =====
-      (function syncThresholdInputs() {{
-        const t1a = document.getElementById('t1a');
-        const t1b = document.getElementById('t1b');
-        const t2a = document.getElementById('t2a');
-        const t2b = document.getElementById('t2b');
-
-        t1a.addEventListener('input', () => {{ t1b.value = t1a.value; }});
-        t1b.addEventListener('input', () => {{ t1a.value = t1b.value; }});
-        t2a.addEventListener('input', () => {{ t2b.value = t2a.value; }});
-        t2b.addEventListener('input', () => {{ t2a.value = t2b.value; }});
-
-        function validateOnBlur() {{
-          const t1 = parseFloat(t1a.value);
-          const t2 = parseFloat(t2a.value);
-          if (t1 > t2) {{
-            alert('Strong threshold must be \u2264 Mid threshold. Resetting.');
-            t1a.value = t2; t1b.value = t2;
-          }}
-        }}
-        t1a.addEventListener('blur', validateOnBlur);
-        t1b.addEventListener('blur', validateOnBlur);
-      }})();
+      // ===== Linkage threshold: live-update all three sections =====
+      document.addEventListener('DOMContentLoaded', function () {{
+        const ltEl = document.getElementById('linkageThreshold');
+        if (ltEl) ltEl.addEventListener('input', function () {{
+          recolorHeatmap();
+          if (typeof buildClosePairs === 'function') buildClosePairs();
+          if (typeof buildDistTable  === 'function') buildDistTable();
+        }});
+      }});
 
       // ===== Threshold binning helpers =====
-      function assignBin(val, t1, t2) {{
+      function assignBin(val, t) {{
         if (val === 0) return 0;
-        if (val <= t1) return 1;
-        if (val <= t2) return 2;
-        return 3;
+        if (t !== null && val <= t) return 1;
+        return 2;
       }}
 
-      function getLinkageColorscale() {{
+      // Discrete 3-bin colorscale matching getDmColor: identical / within / above
+      function getThresholdColorscale() {{
         return [
-          [0.000, '#440154'],
-          [0.333, '#3b528b'],
-          [0.667, '#21918c'],
-          [1.000, '#fde725'],
+          [0,       '#2ca02c'],
+          [1/3,     '#2ca02c'],
+          [1/3,     '#a8d5a2'],
+          [2/3,     '#a8d5a2'],
+          [2/3,     '#f4a460'],
+          [1.0,     '#f4a460']
         ];
       }}
 
       // ===== Draw / redraw heatmap =====
       function recolorHeatmap() {{
-        const t1        = parseInt(document.getElementById('t1a').value) || 10;
-        const t2        = parseInt(document.getElementById('t2a').value) || 40;
+        const tRaw      = document.getElementById('linkageThreshold').value.trim();
+        const t         = tRaw !== '' ? parseInt(tRaw) : null;
         const metaField = document.getElementById('metadataFieldSelect').value;
 
         let labels = genomeLabels.slice();
@@ -826,8 +965,6 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
           labels = reordered.newLabels;
           matrix = reordered.newMatrix;
         }}
-
-        const bins = matrix.map(row => row.map(val => assignBin(val, t1, t2)));
 
         const showHoverMeta = document.getElementById('hoverMetaToggle').checked;
         const hoverText = matrix.map((row, i) =>
@@ -851,31 +988,46 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
           }})
         );
 
-        const traceData = [{{
-          z:          bins,
+        let zData, colorscale, colorbarConfig, extraRange;
+        if (t !== null) {{
+          zData        = matrix.map(row => row.map(val => assignBin(val, t)));
+          colorscale   = getThresholdColorscale();
+          extraRange   = {{ zmin: 0, zmax: 2 }};
+          colorbarConfig = {{
+            tickvals: [0, 1, 2],
+            ticktext: ['Identical (0)', `Matching (\u2264${{t}})`, `Above (>${{t}})`],
+            title:    'Distance'
+          }};
+        }} else {{
+          zData        = matrix;
+          colorscale   = 'Viridis';
+          extraRange   = {{}};
+          colorbarConfig = {{ title: 'Allelic Distance' }};
+        }}
+
+        const traceData = [Object.assign({{
+          z:          zData,
           x:          labels,
           y:          labels,
           type:       'heatmap',
-          colorscale: getLinkageColorscale(),
-          zmin: 0,
-          zmax: 3,
+          colorscale: colorscale,
           text:       hoverText,
           hoverinfo:  'text',
-          colorbar: {{
-            tickvals:  [0, 1, 2, 3],
-            ticktext:  ['Identical (0)', 'Strong (\u22641t1)', 'Mid (\u22642t2)', 'Weak (>t2)'],
-            title:     'Linkage'
-          }}
-        }}];
+          colorbar:   colorbarConfig
+        }}, extraRange)];
 
         // Scale height to number of samples: 40px/sample, min 500, max 1800.
-        // Beyond ~45 samples the labels compress but the plot stays readable.
         const n = labels.length;
         const heatmapHeight = Math.max(500, Math.min(1800, n * 40 + 150));
 
+        const titleStr = t !== null
+          ? `Allelic Distance Heatmap (threshold: ${{t}})` +
+            (metaField ? ` \u2013 Reordered by "${{metaField}}"` : '')
+          : 'Allelic Distance Heatmap' +
+            (metaField ? ` \u2013 Reordered by "${{metaField}}"` : '');
+
         const layout = {{
-          title: `Allelic Distance Heatmap (Strong \u2264${{t1}}, Mid \u2264${{t2}})` +
-                 (metaField ? ` – Reordered by "${{metaField}}"` : ''),
+          title: titleStr,
           height: heatmapHeight,
           width: heatmapHeight,
           xaxis: {{ type: 'category', tickangle: 45 }},
@@ -887,6 +1039,46 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         heatmapDiv.on('plotly_click', onHeatmapClick);
       }}
 
+      // ===== Tab switching =====
+      function switchView(view) {{
+        const sections = {{
+          heatmap:    document.getElementById('heatmapViewSection'),
+          closePairs: document.getElementById('closePairsViewSection'),
+          distTable:  document.getElementById('distanceTableViewSection'),
+        }};
+        const tabs = {{
+          heatmap:    document.getElementById('tabHeatmap'),
+          closePairs: document.getElementById('tabClosePairs'),
+          distTable:  document.getElementById('tabDistTable'),
+        }};
+
+        // Hide all sections, reset all tabs
+        Object.keys(sections).forEach(k => {{
+          if (sections[k]) sections[k].style.display = 'none';
+        }});
+        Object.keys(tabs).forEach(k => {{
+          if (tabs[k]) {{
+            tabs[k].style.background   = '#f5f5f5';
+            tabs[k].style.color        = '#555';
+            tabs[k].style.borderBottom = '';
+            tabs[k].style.fontWeight   = '';
+          }}
+        }});
+
+        // Show active section, highlight active tab
+        if (sections[view]) sections[view].style.display = '';
+        if (tabs[view]) {{
+          tabs[view].style.background   = '#fff';
+          tabs[view].style.color        = '';
+          tabs[view].style.borderBottom = '2px solid #fff';
+          tabs[view].style.fontWeight   = 'bold';
+        }}
+
+        // Trigger data build on first switch to each section
+        if (view === 'closePairs' && typeof buildClosePairs === 'function') buildClosePairs();
+        if (view === 'distTable'  && typeof buildDistTable  === 'function') buildDistTable();
+      }}
+
       // Initial render
       recolorHeatmap();
     </script>
@@ -895,7 +1087,6 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string, svg_conten
         dist_matrix_json=dist_matrix_json,
         metadata_json_string=metadata_json_string,
     )
-    heatmap_html = heatmap_html.replace('TREE_SVG_PLACEHOLDER', svg_content)
 
     return heatmap_html
 
@@ -915,24 +1106,15 @@ def build_distance_analysis_html():
     <!-- ================================================================== -->
     <!-- CLOSE PAIRS                                                         -->
     <!-- ================================================================== -->
+    <div id="closePairsViewSection" style="display:none;">
     <h2>Close Genome Pairs</h2>
     <p>
-      The table below lists unique genome pairs sorted by allelic distance,
-      making it easy to identify the most closely related samples. Only the
-      upper triangle of the distance matrix is shown (each pair appears once).
-      Adjust the <strong>maximum distance</strong> threshold and click
-      <em>Apply</em> to narrow the list. Click any column header to sort.
+      This view lists each unique genome pair sorted by allelic distance, making it easy to
+      identify the most closely related samples. Only the upper triangle of the distance matrix
+      is shown (each pair appears once). Refine your results by changing the distance threshold
+      above. Click any column header to sort.
     </p>
-    <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:12px;">
-      <label style="display:flex; align-items:center; gap:6px;">
-        Show pairs with distance &le;
-        <input type="number" id="cpThreshold" value="20" min="0"
-               style="padding:4px 8px; width:70px; font-size:13px;">
-      </label>
-      <button onclick="buildClosePairs()"
-              style="padding:4px 12px; cursor:pointer;">Apply</button>
-      <button onclick="document.getElementById('cpThreshold').value='20'; buildClosePairs();"
-              style="padding:4px 12px; cursor:pointer;">Reset</button>
+    <div style="margin-bottom:12px;">
       <span id="cpCount" style="color:#555; font-size:13px;"></span>
     </div>
     <div style="overflow:auto; max-height:400px; border:1px solid #ccc; border-radius:4px;">
@@ -954,66 +1136,53 @@ def build_distance_analysis_html():
       </table>
     </div>
 
+    </div><!-- end closePairsViewSection -->
+
     <!-- ================================================================== -->
     <!-- FULL DISTANCE MATRIX TABLE                                          -->
     <!-- ================================================================== -->
+    <div id="distanceTableViewSection" style="display:none;">
     <h2>Distance Matrix Table</h2>
     <p>
-      The table below presents the full pairwise allelic distance matrix in a
-      searchable, color-coded format. Each cell shows the number of alleles that
-      differ between two genomes. Cell colors follow the same linkage thresholds
-      set in the heatmap controls above. Use the <strong>search box</strong> to
-      filter rows by genome ID, or set a <strong>maximum distance</strong> to
-      show only rows that contain at least one genome within that distance.
+      The table below presents the full pairwise allelic distance matrix in a searchable,
+      color-coded format. Each cell shows the number of alleles that differ between two genomes.
+      Use the <strong>search box</strong> to filter rows by genome ID, or set a distance
+      threshold above to highlight cells at or below that value.
     </p>
     <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:10px;">
       <label style="display:flex; align-items:center; gap:6px;">
         Search genome ID:
         <input type="text" id="dmSearch" placeholder="Filter rows by ID..."
-               style="padding:4px 8px; width:200px; font-size:13px;">
+               style="padding:4px 8px; width:200px; font-size:13px;"
+               oninput="buildDistTable()">
       </label>
-      <label style="display:flex; align-items:center; gap:6px;">
-        Show rows with distance &le;
-        <input type="number" id="dmMaxDist" placeholder="e.g. 20" min="0"
-               style="padding:4px 8px; width:80px; font-size:13px;">
-      </label>
-      <button onclick="buildDistTable()"
-              style="padding:4px 12px; cursor:pointer;">Apply</button>
-      <button onclick="document.getElementById('dmSearch').value='';
-                       document.getElementById('dmMaxDist').value='';
-                       buildDistTable();"
-              style="padding:4px 12px; cursor:pointer;">Reset</button>
       <span id="dmRowCount" style="color:#555; font-size:13px;"></span>
     </div>
-    <!-- Color legend -->
+    <!-- Color legend (labels updated dynamically by buildDistTable) -->
     <div style="display:flex; gap:16px; align-items:center; margin-bottom:10px; font-size:12px; flex-wrap:wrap;">
       <strong>Color key:</strong>
-      <span style="background:#2ca02c; color:white; padding:2px 8px; border-radius:3px;">Identical (0)</span>
-      <span style="background:#a8d5a2; color:#333; padding:2px 8px; border-radius:3px;">Strong linkage (&le; t1)</span>
-      <span style="background:#ffe066; color:#333; padding:2px 8px; border-radius:3px;">Mid linkage (&le; t2)</span>
-      <span style="background:#f4a460; color:#333; padding:2px 8px; border-radius:3px;">Weak linkage (&gt; t2)</span>
+      <span id="dmKeyIdentical" style="background:#2ca02c; color:white; padding:2px 8px; border-radius:3px;">Identical (0)</span>
+      <span id="dmKeyMatching" style="background:#a8d5a2; color:#333; padding:2px 8px; border-radius:3px;">Matching threshold</span>
+      <span id="dmKeyAbove"    style="background:#f4a460; color:#333; padding:2px 8px; border-radius:3px;">Above threshold</span>
     </div>
     <div id="dmTableWrapper"
          style="overflow:auto; max-height:600px; border:1px solid #ccc; border-radius:4px;">
       <table id="dmTable" style="border-collapse:collapse; white-space:nowrap;"></table>
     </div>
+    </div><!-- end distanceTableViewSection -->
 
     <script>
       // ===== Shared color helper =====
-      function getDmColor(val, t1, t2) {
+      function getDmColor(val, t) {
         if (val === 0) return { bg: '#2ca02c', fg: 'white' };
-        if (val <= t1) return { bg: '#a8d5a2', fg: '#333' };
-        if (val <= t2) return { bg: '#ffe066', fg: '#333' };
-        return { bg: '#f4a460', fg: '#333' };
+        if (t !== null && val <= t) return { bg: '#a8d5a2', fg: '#333' };
+        return { bg: t !== null ? '#f4a460' : '#ffffff', fg: '#333' };
       }
 
       function getDmThresholds() {
-        const t1El = document.getElementById('t1a');
-        const t2El = document.getElementById('t2a');
-        return {
-          t1: t1El ? (parseInt(t1El.value) || 10) : 10,
-          t2: t2El ? (parseInt(t2El.value) || 40) : 40,
-        };
+        const el  = document.getElementById('linkageThreshold');
+        const raw = el ? el.value.trim() : '';
+        return { t: raw !== '' ? parseInt(raw) : null };
       }
 
       // ===== Close Pairs =====
@@ -1022,22 +1191,21 @@ def build_distance_analysis_html():
       let _cpSortAsc   = true;
 
       function buildClosePairs() {
-        const threshold = parseFloat(document.getElementById('cpThreshold').value);
+        const { t } = getDmThresholds();
         const labels  = genomeLabels;
         const matrix  = distMatrix;
         const n       = labels.length;
-        const { t1, t2 } = getDmThresholds();
 
         _cpPairs = [];
         for (let i = 0; i < n; i++) {
           for (let j = i + 1; j < n; j++) {
             const d = matrix[i][j];
-            if (!isNaN(threshold) && d <= threshold) {
+            if (t === null || d <= t) {
               _cpPairs.push({ g1: labels[i], g2: labels[j], dist: d });
             }
           }
         }
-        _renderClosePairs(t1, t2);
+        _renderClosePairs(t);
       }
 
       function sortClosePairs(field) {
@@ -1047,11 +1215,11 @@ def build_distance_analysis_html():
           _cpSortField = field;
           _cpSortAsc   = (field === 'dist');
         }
-        const { t1, t2 } = getDmThresholds();
-        _renderClosePairs(t1, t2);
+        const { t } = getDmThresholds();
+        _renderClosePairs(t);
       }
 
-      function _renderClosePairs(t1, t2) {
+      function _renderClosePairs(t) {
         ['g1', 'g2', 'dist'].forEach(f => {
           const el = document.getElementById('cpSort_' + f);
           if (el) el.textContent = '';
@@ -1073,12 +1241,12 @@ def build_distance_analysis_html():
           const td = document.createElement('td');
           td.colSpan = 3;
           td.style.cssText = 'padding:14px; text-align:center; color:#666; font-style:italic;';
-          td.textContent = 'No pairs found within the specified distance threshold.';
+          td.textContent = 'No pairs found within the specified distance threshold. Try increasing the threshold.';
           tr.appendChild(td);
           tbody.appendChild(tr);
         } else {
           sorted.forEach(pair => {
-            const { bg, fg } = getDmColor(pair.dist, t1, t2);
+            const { bg, fg } = getDmColor(pair.dist, t);
             const tr  = document.createElement('tr');
             const tdg1 = document.createElement('td');
             const tdg2 = document.createElement('td');
@@ -1100,21 +1268,23 @@ def build_distance_analysis_html():
 
       // ===== Full Distance Matrix Table =====
       function buildDistTable() {
-        const searchVal  = document.getElementById('dmSearch').value.trim().toLowerCase();
-        const maxDistRaw = document.getElementById('dmMaxDist').value.trim();
-        const maxDist    = maxDistRaw !== '' ? parseFloat(maxDistRaw) : null;
-        const { t1, t2 } = getDmThresholds();
+        const searchVal = document.getElementById('dmSearch').value.trim().toLowerCase();
+        const { t } = getDmThresholds();
 
         const labels = genomeLabels;
         const matrix = distMatrix;
         const n      = labels.length;
 
+        // Update color key labels to reflect the current threshold
+        const kmEl = document.getElementById('dmKeyMatching');
+        const kaEl = document.getElementById('dmKeyAbove');
+        if (kmEl) kmEl.textContent = t !== null ? `Matching threshold (\u2264${t})` : 'Matching threshold';
+        if (kaEl) kaEl.textContent = t !== null ? `Above threshold (>${t})`         : 'Above threshold';
+
+        // Filter rows by search only; all rows shown regardless of threshold
         const visibleRows = [];
         labels.forEach((lbl, i) => {
-          const matchSearch = !searchVal || lbl.toLowerCase().includes(searchVal);
-          const matchDist   = maxDist === null ||
-            matrix[i].some((v, j) => i !== j && v <= maxDist);
-          if (matchSearch && matchDist) visibleRows.push(i);
+          if (!searchVal || lbl.toLowerCase().includes(searchVal)) visibleRows.push(i);
         });
 
         const table    = document.getElementById('dmTable');
@@ -1145,7 +1315,7 @@ def build_distance_analysis_html():
 
           labels.forEach((lbl, j) => {
             const val        = matrix[i][j];
-            const { bg, fg } = getDmColor(val, t1, t2);
+            const { bg, fg } = getDmColor(val, t);
             const td         = document.createElement('td');
             td.style.cssText = 'background:' + bg + '; color:' + fg + '; padding:3px 5px; border:1px solid #ddd; text-align:center; font-size:11px; min-width:28px;';
             td.textContent   = val;
@@ -1175,22 +1345,21 @@ def build_distance_analysis_html():
             : 'Showing ' + visibleRows.length + ' of ' + n + ' genomes';
       }
 
-      // ===== Initialise on load + sync with heatmap thresholds =====
+      // ===== Initialise on load + sync with heatmap threshold =====
       document.addEventListener('DOMContentLoaded', function () {
         buildClosePairs();
         buildDistTable();
 
-        const t1In = document.getElementById('t1a');
-        const t2In = document.getElementById('t2a');
-        if (t1In) t1In.addEventListener('input', function () { buildClosePairs(); buildDistTable(); });
-        if (t2In) t2In.addEventListener('input', function () { buildClosePairs(); buildDistTable(); });
+        const ltIn = document.getElementById('linkageThreshold');
+        if (ltIn) ltIn.addEventListener('input', function () { buildClosePairs(); buildDistTable(); });
       });
     </script>
     """
 
 
 def define_html_template(summary_table_html, barplot_html,
-                          heatmap_html, distance_analysis_html, metadata_json_string,
+                          heatmap_html, distance_analysis_html, tree_html,
+                          metadata_json_string,
                           n_genomes, n_loci, low_coverage_warning_html=""):
     """Assemble the complete cgMLST report HTML.
 
@@ -1288,36 +1457,36 @@ def define_html_template(summary_table_html, barplot_html,
   <!-- ================================================================== -->
   <h2>About the Analysis</h2>
   <p>
-    This report summarizes the results of a Core Genome Multi-Locus Sequence
-    Typing (cgMLST) analysis performed with
-    <a href="https://chewbbaca.readthedocs.io" target="_blank">chewBBACA</a>.
-    cgMLST is a standardized, high-resolution approach to bacterial typing
-    that compares allele assignments across hundreds to thousands of shared
-    genes (loci), providing a reproducible and portable measure of genomic
-    relatedness. Note, you can download the images of the plots in this
-    report by clicking on the camera icon in the upper left-hand corner of
-    each plot.
+    Explore the results of your Core Genome Multi-Locus Sequence Typing (cgMLST) analysis in
+    this interactive report. An allele is a specific sequence variant that occurs at a given
+    locus. The aim of this service is to characterize bacteria and viruses based on the presence
+    and absence of specific loci. These loci are defined in a schema.
+  </p>
+  <p>
+    Typical Multi-Locus Sequence Typing (MLST) schemas use 5&ndash;7 genes that are conserved
+    and essential for basic cellular functions and are expected to be present in all strains of
+    a species even as they evolve. This service uses schemas with predefined sets of
+    species-specific loci including both core and accessory genes. This allows for finer
+    resolution of bacterial strain differences and consistent tracking across labs. There are 32
+    schemas for priority pathogen species curated by species experts at
+    <a href="https://www.ridom.de/seqsphere/cgmlst/" target="_blank">Ridom</a>.
+  </p>
+  <p>
+    A core genome is composed of the genes shared amongst all genomes in the group.
   </p>
 
   <h3>About the Analysis Workflow</h3>
   <p>
-    The analysis begins with a set of bacterial genome assemblies and a
-    curated cgMLST schema — a defined collection of loci representative of
-    the core genome of the target species or closely related species.
-    chewBBACA's AlleleCall module identifies and assigns allele numbers at
-    each locus in each genome.
-  </p>
-  <p>
-    The resulting allele calls are used throughout the remainder of the
-    analysis.
-    <a href="https://github.com/zheminzhou/pHierCC/tree/master" target="_blank">pHierCC</a>
-    applies an unsupervised machine learning algorithm that organises genomes
-    into a hierarchical tree of nested clusters. Cluster assignments are
-    informed by a representative set of precomputed clustering data for the
-    same species.
-    <a href="https://github.com/achtman-lab/GrapeTree" target="_blank">GrapeTree</a>
-    uses the MSTree V2 algorithm to construct minimum spanning trees, which
-    are available for viewing in the analysis results.
+    The analysis begins with the <strong>chewBBACA 3.3.10 AlleleCall</strong> command. This
+    reviews the input assembled genome sequences for Coding DNA sequences (CDSs) and open
+    reading frames (ORFs). To be considered, a CDS must be classified as such by
+    <a href="https://github.com/althonos/pyrodigal" target="_blank">Pyrodigal</a>. These
+    coding regions are then compared to the known alleles. If the Blast Score Ratio (BSR) of a
+    known allele is equal to or greater than 0.6 it is considered an Exact Match. Note: matches
+    are made at the gene level. If a sequence does not match any of the known alleles it is
+    considered a new allele candidate and stored as INF-###. These alleles are not added to our
+    schemas (chewBBACA does allow for this functionality). The allele calling results are used
+    throughout the rest of the pipeline.
   </p>
   <p>The AlleleCall module assigns one of the following classification codes to each locus:</p>
   <div style="background:#e8f4f8; border-left:5px solid #2196f3; border-radius:4px;
@@ -1350,6 +1519,25 @@ def define_html_template(summary_table_html, barplot_html,
     </dl>
   </div>
 
+  <p>
+    A step called <strong>Extract Core Loci</strong> reviews which alleles are shared across
+    all genomes. The detailed results are not reflected in this report but are available in the
+    extract cgMLST directory, which contains summary statistics evaluating results per sample
+    and per locus.
+  </p>
+  <p>
+    <a href="https://github.com/zheminzhou/pHierCC/tree/master" target="_blank">pHierCC</a>
+    applies an unsupervised machine learning algorithm that organizes genomes into a
+    hierarchical tree of nested clusters. Cluster assignments are informed by a representative
+    set of precomputed clustering data for the same species.
+  </p>
+  <p>
+    <a href="https://github.com/achtman-lab/GrapeTree" target="_blank">GrapeTree</a>
+    generates trees using the MSTree V2 algorithm to construct a minimum spanning tree. A
+    snapshot of the tree is included in this report. The job results include the same tree as
+    both a newick file and a phyloxml file.
+  </p>
+
 
   <!-- ================================================================== -->
   <!-- INPUT DATA SUMMARY                                                   -->
@@ -1364,14 +1552,13 @@ def define_html_template(summary_table_html, barplot_html,
 
   <h3>Loci Coverage per Sample</h3>
   <p>
-    The chart below shows the breakdown of locus call outcomes for each
-    sample. The hover will display the genome id followed by the number
-    of loci called.
+    The chart below shows the breakdown of allele call results for each sample. Hover over each
+    genome to view loci assignments. Majority classifications can overwhelm the barplot &mdash;
+    hide a given subset by clicking on the square in the Classification key.
     <b>Exact</b> (green) loci received a numeric allele assignment.
-    <b>INF</b> (teal) loci were assigned a newly inferred allele.  All other
-    colors represent missing or problematic calls that do not contribute to
-    the distance calculation.  Samples with a high proportion of missing loci
-    may warrant quality review.
+    <b>INF</b> (teal) loci were assigned a newly inferred allele. All other colors represent
+    missing or problematic calls that do not contribute to the distance calculation. Samples
+    with a high proportion of missing loci may warrant quality review.
   </p>
   <div class="plot-container">
     <div class="plot" id="lociCoveragePlot">
@@ -1491,6 +1678,11 @@ def define_html_template(summary_table_html, barplot_html,
   {distance_analysis_html}
 
   <!-- ================================================================== -->
+  <!-- PHYLOGENETIC TREE                                                    -->
+  <!-- ================================================================== -->
+  {tree_html}
+
+  <!-- ================================================================== -->
   <!-- REFERENCES                                                           -->
   <!-- ================================================================== -->
   <h3>References</h3>
@@ -1518,6 +1710,7 @@ def define_html_template(summary_table_html, barplot_html,
         barplot_html=barplot_html,
         heatmap_html=heatmap_html,
         distance_analysis_html=distance_analysis_html,
+        tree_html=tree_html,
         metadata_json_string=metadata_json_string,
         low_coverage_warning_html=low_coverage_warning_html,
     )
@@ -1526,20 +1719,33 @@ def define_html_template(summary_table_html, barplot_html,
 
 
 @cli.command()
-@click.argument("result_alleles")
+@click.argument("config_json")
 @click.argument("metadata_json")
 @click.argument("html_report_path")
 @click.option("--svg-dir", default="work", show_default=True,
               help="Directory to search for the tree SVG file (*.svg).")
-def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir):
+def write_html_report(config_json, metadata_json, html_report_path, svg_dir):
     """Generate an interactive cgMLST HTML report.
 
     \b
     Arguments:
-      RESULT_ALLELES   Path to chewBBACA result_alleles.tsv
+      CONFIG_JSON      Path to the service config.json
       METADATA_JSON    Path to genome_metadata.json
       HTML_REPORT_PATH Path for the output HTML report
     """
+    # ---- Read config ----
+    with open(config_json) as f:
+        config = json.load(f)
+
+    output_data_dir = config.get("output_data_dir", "")
+    params = config.get("params", {})
+    ws_output_path = params.get("output_path", "")
+    ws_output_file = params.get("output_file", "")
+    tree_ws_path = (ws_output_path + "." + ws_output_file) if ws_output_path and ws_output_file else ""
+
+    result_alleles = os.path.join(output_data_dir, "result_alleles.tsv")
+    click.echo("Using result_alleles: {}".format(result_alleles))
+
     # ---- Coverage stats (for bar chart and summary table) ----
     click.echo("Parsing result_alleles.tsv ...")
     genome_ids, loci_ids, raw_df, coverage_df = parse_result_alleles(result_alleles)
@@ -1582,19 +1788,50 @@ def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir):
                                                n_cgmlst_loci=n_cgmlst)
 
     click.echo("Checking loci coverage thresholds ...")
-    low_coverage_warning_html = create_low_coverage_warning(coverage_df, n_loci)
+    low_coverage_warning_html = create_low_coverage_warning(coverage_df, n_loci,
+                                                             config_json_path=config_json)
 
     click.echo("Assembling heatmap ...")
+    heatmap_html = build_heatmap_html(clustered_labels, clustered_matrix, metadata_json_string)
+
+    click.echo("Building distance analysis tables ...")
+    distance_analysis_html = build_distance_analysis_html()
+
+    click.echo("Building tree section ...")
     svg_candidates = sorted(glob.glob(os.path.join(svg_dir, '*.svg')))
     if svg_candidates:
         with open(svg_candidates[0]) as f:
             svg_content = f.read()
     else:
         svg_content = '<p style="color:#555;">Tree SVG not found. Expected at {}/*.svg</p>'.format(svg_dir)
-    heatmap_html = build_heatmap_html(clustered_labels, clustered_matrix, metadata_json_string, svg_content=svg_content)
-
-    click.echo("Building distance analysis tables ...")
-    distance_analysis_html = build_distance_analysis_html()
+    tree_ws_path_json = json.dumps(tree_ws_path if tree_ws_path else None)
+    tree_html = """
+    <h2>Phylogenetic Tree</h2>
+    <p>
+      The tree below is generated by
+      <a href="https://github.com/achtman-lab/GrapeTree" target="_blank">GrapeTree</a>
+      using the MSTree V2 algorithm to construct a minimum spanning tree. The job results
+      include the same tree as both a newick file and a phyloxml file.
+      <a id="treeViewerLink" href="#" target="_blank">Click here</a> to view the phyloxml
+      trees in our tree viewer to paint metadata onto the tree.
+    </p>
+    <script>
+      (function() {
+        var el = document.getElementById('treeViewerLink');
+        if (el) {
+          var wsPath = TREE_WS_PATH_JSON;
+          if (wsPath) {
+            el.href = window.location.origin + '/workspace' + wsPath;
+          } else {
+            el.parentNode.removeChild(el);
+          }
+        }
+      })();
+    </script>
+    <div id="svgContainer" style="width:100%; overflow-x:auto; margin-top:8px;">
+      TREE_SVG_PLACEHOLDER
+    </div>
+    """.replace('TREE_WS_PATH_JSON', tree_ws_path_json).replace('TREE_SVG_PLACEHOLDER', svg_content)
 
     click.echo("Writing HTML report ...")
     html = define_html_template(
@@ -1602,6 +1839,7 @@ def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir):
         barplot_html=barplot_html,
         heatmap_html=heatmap_html,
         distance_analysis_html=distance_analysis_html,
+        tree_html=tree_html,
         metadata_json_string=metadata_json_string,
         n_genomes=n_genomes,
         n_loci=n_loci,
