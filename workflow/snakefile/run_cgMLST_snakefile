@@ -223,6 +223,6 @@ rule run_grapetree_cli:
         cp {params.allele_call_input} {output.final_out}
 
         # reporting
-        core-genome-mlst-utils write-html-report {input.config} \
-            {input.metadata} {output.output_report} --svg-dir {params.output_dir}
+        core-genome-mlst-utils write-html-report {params.allele_call_input} \
+            {input.metadata} {output.output_report} --svg-dir {params.output_dir} --config {input.config}
         """
