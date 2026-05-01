@@ -383,6 +383,19 @@ def chewbbaca_distance_pipeline(result_alleles_tsv):
     # chewBBACA: pa_matrix = masked_profiles.apply(binarize_matrix)
     pa_matrix = masked_profiles.apply(_chewbbaca_binarize)
 
+    # Step 3b — Drop genomes with zero valid allele calls (all loci absent).
+    # A single all-zero row prevents any locus from reaching the 100% threshold.
+    loci_per_genome = pa_matrix.sum(axis=1)
+    zero_coverage = loci_per_genome[loci_per_genome == 0].index.tolist()
+    if zero_coverage:
+        print("WARNING: {} genome(s) have 0 valid allele calls and will be "
+              "excluded from the distance matrix: {}".format(
+                  len(zero_coverage), zero_coverage))
+        pa_matrix = pa_matrix.drop(index=zero_coverage)
+        masked_profiles = masked_profiles.drop(index=zero_coverage)
+        genome_ids = [g for g in genome_ids if g not in zero_coverage]
+        genome_ids_display = [gid.replace('_', '.') for gid in genome_ids]
+
     # Step 4 — cgMLST at 100% (loci present in every sample)
     # chewBBACA: compute_cgMLST(pa_matrix, sample_ids, 1, len(sample_ids))
     n_samples, _ = pa_matrix.shape
@@ -605,7 +618,7 @@ def create_low_coverage_warning(coverage_df, n_loci, config_json_path="config.js
             input_data_dir = config.get("input_data_dir", "")
             output_dir = config.get("output_data_dir", "")
             params = config.get("params", {})
-            output_path = params.get("output_path", "") + "." + params.get("output_file", "")
+            output_path = params.get("output_path", "") + "/." + params.get("output_file", "")
             if input_data_dir and output_dir:
                 raw_fasta_dir = os.path.join(input_data_dir, "raw_fastas")
                 for genome_id in flagged:
@@ -636,7 +649,7 @@ def create_low_coverage_warning(coverage_df, n_loci, config_json_path="config.js
                 continue
             metrics = result["metrics"]
             ws_base = result["output_path"]
-            ws_report = f"{ws_base}/qc_low_quality_genomes/{genome_id}/report.html"
+            ws_report = f"{ws_base}/qc_low_quality_genomes/{genome_id}/report.pdf"
             ws_dir = f"{ws_base}/qc_low_quality_genomes/{genome_id}"
             cells = "".join(f'<td style="padding:4px 8px;">{metrics.get(c, "N/A")}</td>' for c in quast_cols)
             links_cell = (
@@ -1719,32 +1732,32 @@ def define_html_template(summary_table_html, barplot_html,
 
 
 @cli.command()
-@click.argument("config_json")
+@click.argument("result_alleles")
 @click.argument("metadata_json")
 @click.argument("html_report_path")
 @click.option("--svg-dir", default="work", show_default=True,
               help="Directory to search for the tree SVG file (*.svg).")
-def write_html_report(config_json, metadata_json, html_report_path, svg_dir):
+@click.option("--config", "config_json", default=None,
+              help="Path to service config.json (used for tree viewer link and low-coverage QC).")
+def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir, config_json):
     """Generate an interactive cgMLST HTML report.
 
     \b
     Arguments:
-      CONFIG_JSON      Path to the service config.json
+      RESULT_ALLELES   Path to chewBBACA result_alleles.tsv
       METADATA_JSON    Path to genome_metadata.json
       HTML_REPORT_PATH Path for the output HTML report
     """
-    # ---- Read config ----
-    with open(config_json) as f:
-        config = json.load(f)
-
-    output_data_dir = config.get("output_data_dir", "")
-    params = config.get("params", {})
-    ws_output_path = params.get("output_path", "")
-    ws_output_file = params.get("output_file", "")
-    tree_ws_path = (ws_output_path + "." + ws_output_file) if ws_output_path and ws_output_file else ""
-
-    result_alleles = os.path.join(output_data_dir, "result_alleles.tsv")
     click.echo("Using result_alleles: {}".format(result_alleles))
+
+    tree_ws_path = ""
+    if config_json:
+        with open(config_json) as f:
+            config = json.load(f)
+        params = config.get("params", {})
+        ws_output_path = params.get("output_path", "")
+        ws_output_file = params.get("output_file", "")
+        tree_ws_path = (ws_output_path + "/." + ws_output_file) if ws_output_path and ws_output_file else ""
 
     # ---- Coverage stats (for bar chart and summary table) ----
     click.echo("Parsing result_alleles.tsv ...")
@@ -1789,7 +1802,7 @@ def write_html_report(config_json, metadata_json, html_report_path, svg_dir):
 
     click.echo("Checking loci coverage thresholds ...")
     low_coverage_warning_html = create_low_coverage_warning(coverage_df, n_loci,
-                                                             config_json_path=config_json)
+                                                             config_json_path=config_json or "config.json")
 
     click.echo("Assembling heatmap ...")
     heatmap_html = build_heatmap_html(clustered_labels, clustered_matrix, metadata_json_string)
