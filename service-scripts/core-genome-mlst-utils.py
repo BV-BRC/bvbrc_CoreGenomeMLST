@@ -843,6 +843,11 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
             <!-- options populated dynamically -->
           </select>
         </label>
+        <label style="margin-left:16px;">Label Rows/Columns By:
+          <select id="heatmapLabelField" onchange="syncLabelField(this.value)">
+            <!-- options populated dynamically -->
+          </select>
+        </label>
         <label style="margin-left:16px; font-weight:bold;">
           <input type="checkbox" id="hoverMetaToggle" onchange="recolorHeatmap()">
           Show Metadata on Hover
@@ -885,7 +890,7 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
       // ===== Populate metadata field dropdown =====
       (function populateMetadataFields() {{
         const select  = document.getElementById('metadataFieldSelect');
-        const allKeys = Object.keys(metadata[0]).filter(k => k !== 'id');
+        const allKeys = Object.keys(metadata[0]).filter(k => k !== 'id' && k !== 'genome_id');
 
         const defaultOpt       = document.createElement('option');
         defaultOpt.value       = '';
@@ -898,7 +903,40 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
           opt.textContent = field;
           select.appendChild(opt);
         }});
+
+        const labelSelect = document.getElementById('heatmapLabelField');
+        const labelDefault = document.createElement('option');
+        labelDefault.value = '';
+        labelDefault.textContent = 'Genome ID';
+        labelSelect.appendChild(labelDefault);
+        allKeys.forEach(field => {{
+          const opt = document.createElement('option');
+          opt.value = field;
+          opt.textContent = field;
+          labelSelect.appendChild(opt);
+        }});
       }})();
+
+      // ===== Populate Distance Matrix Table's label dropdown =====
+      // Deferred to DOMContentLoaded: dmLabelField lives in the Distance Matrix
+      // Table section, which is appended to the page after this script tag, so
+      // the element does not exist in the DOM yet when this script first runs.
+      function populateDmLabelField() {{
+        const dmLabelSelect = document.getElementById('dmLabelField');
+        if (!dmLabelSelect || dmLabelSelect.options.length > 0) return;
+        const allKeys = Object.keys(metadata[0]).filter(k => k !== 'id' && k !== 'genome_id');
+        const dmLabelDefault = document.createElement('option');
+        dmLabelDefault.value = '';
+        dmLabelDefault.textContent = 'Genome ID';
+        dmLabelSelect.appendChild(dmLabelDefault);
+        allKeys.forEach(field => {{
+          const opt = document.createElement('option');
+          opt.value = field;
+          opt.textContent = field;
+          dmLabelSelect.appendChild(opt);
+        }});
+      }}
+      document.addEventListener('DOMContentLoaded', populateDmLabelField);
 
       // ===== Reorder matrix by metadata field =====
       function reorderByField(fieldName, labelsArr, matrixArr) {{
@@ -947,8 +985,8 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
       function onHeatmapClick(eventData) {{
         if (!eventData || !eventData.points || eventData.points.length === 0) return;
         const pt   = eventData.points[0];
-        const id1  = pt.y;
-        const id2  = pt.x;
+        const id1  = pt.customdata ? pt.customdata[0] : pt.y;
+        const id2  = pt.customdata ? pt.customdata[1] : pt.x;
         const dist = distMatrix[genomeLabels.indexOf(id1)][genomeLabels.indexOf(id2)];
 
         const meta1 = idToMeta[id1] || {{ genome_id: id1 }};
@@ -1001,6 +1039,7 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
         const tRaw      = document.getElementById('linkageThreshold').value.trim();
         const t         = tRaw !== '' ? parseInt(tRaw) : null;
         const metaField = document.getElementById('metadataFieldSelect').value;
+        const labelField = document.getElementById('heatmapLabelField') ? document.getElementById('heatmapLabelField').value : '';
 
         let labels = genomeLabels.slice();
         let matrix = distMatrix.map(row => row.slice());
@@ -1010,6 +1049,20 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
           labels = reordered.newLabels;
           matrix = reordered.newMatrix;
         }}
+
+        // Display labels: use metadata field value alongside genome ID if selected
+        const displayLabels = labels.map(id => {{
+          if (!labelField) return id;
+          const meta = idToMeta[id];
+          const val = meta && meta[labelField] && meta[labelField] !== 'N/A'
+            ? meta[labelField]
+            : '[No data]';
+          return `${{id}} | ${{val}}`;
+        }});
+
+        // customdata stores [rowGenomeId, colGenomeId] per cell so the click handler
+        // can look up metadata even when display labels are not genome IDs
+        const customData = labels.map(id1 => labels.map(id2 => [id1, id2]));
 
         const showHoverMeta = document.getElementById('hoverMetaToggle').checked;
         const hoverText = matrix.map((row, i) =>
@@ -1052,8 +1105,9 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
 
         const traceData = [Object.assign({{
           z:          zData,
-          x:          labels,
-          y:          labels,
+          x:          displayLabels,
+          y:          displayLabels,
+          customdata: customData,
           type:       'heatmap',
           colorscale: colorscale,
           text:       hoverText,
@@ -1061,25 +1115,23 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
           colorbar:   colorbarConfig
         }}, extraRange)];
 
-        // Scale height to number of samples: 40px/sample, min 500, max 1800.
-        const n = labels.length;
-        const heatmapHeight = Math.max(500, Math.min(1800, n * 40 + 150));
-
         const titleStr = t !== null
           ? `Allelic Distance Heatmap (threshold: ${{t}})` +
             (metaField ? ` \u2013 Reordered by "${{metaField}}"` : '')
           : 'Allelic Distance Heatmap' +
             (metaField ? ` \u2013 Reordered by "${{metaField}}"` : '');
 
+        const heatmapDiv = document.getElementById('heatmap');
+        const plotDim = heatmapDiv.offsetWidth || 700;
+
         const layout = {{
           title: titleStr,
-          height: heatmapHeight,
-          width: heatmapHeight,
+          height: plotDim,
+          width: plotDim,
           xaxis: {{ type: 'category', tickangle: 45 }},
           yaxis: {{ type: 'category', tickangle: 45 }}
         }};
 
-        const heatmapDiv = document.getElementById('heatmap');
         Plotly.newPlot(heatmapDiv, traceData, layout);
         heatmapDiv.on('plotly_click', onHeatmapClick);
       }}
@@ -1122,6 +1174,16 @@ def build_heatmap_html(genome_ids, dist_matrix, metadata_json_string):
         // Trigger data build on first switch to each section
         if (view === 'closePairs' && typeof buildClosePairs === 'function') buildClosePairs();
         if (view === 'distTable'  && typeof buildDistTable  === 'function') buildDistTable();
+      }}
+
+      // ===== Keep Label selections in sync between Heatmap and Distance Matrix Table =====
+      function syncLabelField(value) {{
+        const hLabel = document.getElementById('heatmapLabelField');
+        const dLabel = document.getElementById('dmLabelField');
+        if (hLabel) hLabel.value = value;
+        if (dLabel) dLabel.value = value;
+        recolorHeatmap();
+        if (typeof buildDistTable === 'function') buildDistTable();
       }}
 
       // Initial render
@@ -1194,6 +1256,18 @@ def build_distance_analysis_html():
       Use the <strong>search box</strong> to filter rows by genome ID, or set a distance
       threshold above to highlight cells at or below that value.
     </p>
+    <div class="heatmap-controls">
+      <h4>Filter and Sort the Data:</h4>
+      <label>Label Rows/Columns By:
+        <select id="dmLabelField" onchange="syncLabelField(this.value)">
+          <!-- options populated dynamically -->
+        </select>
+      </label>
+      <label style="margin-left:16px;">
+        <input type="checkbox" id="showGenomeIdDm" checked onchange="buildDistTable()">
+        Display Genome ID with metadata
+      </label>
+    </div>
     <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:10px;">
       <label style="display:flex; align-items:center; gap:6px;">
         Search genome ID:
@@ -1321,10 +1395,22 @@ def build_distance_analysis_html():
       function buildDistTable() {
         const searchVal = document.getElementById('dmSearch').value.trim().toLowerCase();
         const { t } = getDmThresholds();
+        const labelField = document.getElementById('dmLabelField') ? document.getElementById('dmLabelField').value : '';
+        const showGenomeId = document.getElementById('showGenomeIdDm') ? document.getElementById('showGenomeIdDm').checked : true;
 
         const labels = genomeLabels;
         const matrix = distMatrix;
         const n      = labels.length;
+
+        // Display labels: use metadata field value if selected, fall back to genome ID
+        const displayLabels = labels.map(id => {
+          if (!labelField) return id;
+          const meta = idToMeta[id];
+          const val = meta && meta[labelField] && meta[labelField] !== 'N/A'
+            ? meta[labelField]
+            : '[No data]';
+          return showGenomeId ? `${id} | ${val}` : `${val}`;
+        });
 
         // Update color key labels to reflect the current threshold
         const kmEl = document.getElementById('dmKeyMatching');
@@ -1347,7 +1433,7 @@ def build_distance_analysis_html():
         corner.style.cssText = 'position:sticky; top:0; left:0; z-index:4; background:#fff; padding:4px 8px; border:1px solid #ddd; min-width:120px;';
         corner.textContent = '';
         hRow.appendChild(corner);
-        labels.forEach(lbl => {
+        displayLabels.forEach(lbl => {
           const th = document.createElement('th');
           th.style.cssText = 'position:sticky; top:0; z-index:2; background:#f8f8f8; border:1px solid #ddd; padding:2px; font-size:10px; font-weight:normal; writing-mode:vertical-rl; transform:rotate(180deg); height:110px; vertical-align:bottom; text-align:left;';
           th.textContent = lbl;
@@ -1361,7 +1447,7 @@ def build_distance_analysis_html():
           const tr    = document.createElement('tr');
           const rowTh = document.createElement('th');
           rowTh.style.cssText = 'position:sticky; left:0; z-index:1; background:#f8f8f8; border:1px solid #ddd; padding:3px 8px; font-size:11px; font-weight:normal; white-space:nowrap; text-align:left;';
-          rowTh.textContent = labels[i];
+          rowTh.textContent = displayLabels[i];
           tr.appendChild(rowTh);
 
           labels.forEach((lbl, j) => {
@@ -1413,8 +1499,19 @@ def build_distance_analysis_html():
         const searchVal = document.getElementById('dmSearch')
           ? document.getElementById('dmSearch').value.trim().toLowerCase() : '';
         const { t } = getDmThresholds();
+        const labelField = document.getElementById('dmLabelField') ? document.getElementById('dmLabelField').value : '';
+        const showGenomeId = document.getElementById('showGenomeIdDm') ? document.getElementById('showGenomeIdDm').checked : true;
         const labels = genomeLabels;
         const matrix = distMatrix;
+
+        const displayLabels = labels.map(id => {
+          if (!labelField) return id;
+          const meta = idToMeta[id];
+          const val = meta && meta[labelField] && meta[labelField] !== 'N/A'
+            ? meta[labelField]
+            : '[No data]';
+          return showGenomeId ? `${id} | ${val}` : `${val}`;
+        });
 
         const visibleRows = [];
         labels.forEach((lbl, i) => {
@@ -1423,7 +1520,7 @@ def build_distance_analysis_html():
 
         const wsData = [];
         const headerRow = [{ v: '', s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: 'E0E0E0' } } } }];
-        labels.forEach(lbl => {
+        displayLabels.forEach(lbl => {
           headerRow.push({
             v: lbl,
             s: {
@@ -1437,7 +1534,7 @@ def build_distance_analysis_html():
 
         visibleRows.forEach(i => {
           const row = [{
-            v: labels[i],
+            v: displayLabels[i],
             s: { font: { bold: true }, fill: { patternType: 'solid', fgColor: { rgb: 'E0E0E0' } } }
           }];
           labels.forEach((lbl, j) => {
@@ -1979,7 +2076,7 @@ def write_html_report(result_alleles, metadata_json, html_report_path, svg_dir, 
         f.write(html)
 
     metadata_tsv_dst = os.path.join(output_dir, "metadata.tsv")
-    if os.path.exists("metadata.tsv"):
+    if os.path.exists("metadata.tsv") and os.path.abspath("metadata.tsv") != os.path.abspath(metadata_tsv_dst):
         shutil.copy("metadata.tsv", metadata_tsv_dst)
         click.echo("  Metadata TSV written to {}".format(metadata_tsv_dst))
 
