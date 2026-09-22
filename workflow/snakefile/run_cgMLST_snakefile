@@ -207,7 +207,7 @@ rule run_grapetree_cli:
         p3x-tree-to-svg {output.MSTreeV2}
         
         # converting to phyloxml tree
-        p3x-newick-to-phyloxml --verbose -l genome_id -g "collection_year,host_common_name,isolation_country,strain,genome_name,genome_id,accession,subtype,lineage,host_group,collection_date,geographic_group,geographic_location" {output.MSTreeV2}
+        p3x-newick-to-phyloxml --verbose -l genome_id -g "collection_year,host_common_name,isolation_country,strain,genome_name,genome_id,accession,subtype,lineage,host_group,collection_date,geographic_group,geographic_location,isolation_source" {output.MSTreeV2}
 
         # local clustering 
         pHierCC \
