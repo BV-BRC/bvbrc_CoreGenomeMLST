@@ -214,7 +214,7 @@ sub run
         my @genome_metadata_fields = (
         "genome_id", "genome_name", "species", "strain", "genbank_accessions", "subtype", "lineage", "clade", "host_group", 
         "host_common_name", "host_scientific_name", "collection_year", "geographic_group", "isolation_country", "genome_status", 
-        "state_province", "state");
+        "state_province", "state", "isolation_source");
         # Get metadata for all genomes in the group
         my @genome_group_metadata = $api->retrieve_genome_metadata($group_genome_ids, \@genome_metadata_fields);
         my $json_string = encode_json(@genome_group_metadata);
